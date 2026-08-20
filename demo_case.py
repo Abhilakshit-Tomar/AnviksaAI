@@ -111,7 +111,7 @@ def main():
                       "shape — see web/index.html's STAGE_LABELS."),
             "stages": stages_out,
         }
-        with open("contract.json", "w") as f:
+        with open("contract.json", "w", encoding="utf-8") as f:
             json.dump(doc, f, indent=2)
         print(f"\nwrote contract.json with {len(stages_out)} stages "
               f"({', '.join(s['_stage'] for s in stages_out)})")
@@ -122,7 +122,7 @@ def main():
         payload["_evidence"] = evidence
         payload["_note"] = ("Real engine output over real DDXPlus counts. "
                             "Frontend builds against this shape.")
-        with open("contract.json", "w") as f:
+        with open("contract.json", "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         print(f"\nwrote contract.json from stage {args.stage} ({label})")
 

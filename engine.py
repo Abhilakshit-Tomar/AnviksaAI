@@ -88,7 +88,7 @@ class Engine:
         z = np.load(counts_path, allow_pickle=True)
         if yaml is None:
             raise ImportError("pip install pyyaml")
-        with open(severity_path) as f:
+        with open(severity_path, encoding="utf-8") as f:
             sev = yaml.safe_load(f)
         eng = cls(
             cond=z["cond"], prior=z["prior"],
