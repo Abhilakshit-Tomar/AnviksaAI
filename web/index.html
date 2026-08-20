@@ -78,8 +78,16 @@ button.primary.playing{animation:btnpulse 1s ease-in-out infinite}
 .chip .k{font-family:var(--mono);font-size:10px;color:var(--muted)}
 .thumb.clickable{cursor:pointer}
 .thumb.clickable:hover{border-color:rgba(57,135,229,.6)}
-.thumb.clickable.active{border-color:#3987e5}
-.doctext{margin-top:8px;font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--hair);border-radius:6px;padding:9px 10px;white-space:pre-wrap;word-break:break-word}
+
+/* ---------- document text modal ---------- */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000;padding:24px}
+.modal-overlay.hide{display:none}
+.modal-box{background:var(--surface);border:1px solid var(--hair);border-radius:12px;width:100%;max-width:560px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.55);animation:fade .15s ease}
+.modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 18px;border-bottom:1px solid var(--hair);flex-shrink:0}
+.modal-title{font-size:13px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+.modal-close{background:none;border:none;color:var(--muted);font-size:19px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px}
+.modal-close:hover{color:var(--ink);background:var(--surface-2)}
+.modal-body{margin:18px;padding:18px 20px;background:var(--surface-2);border:1px solid var(--hair);border-radius:8px;font-family:var(--mono);font-size:12.5px;line-height:1.85;color:var(--ink-2);white-space:pre-wrap;word-break:break-word;overflow-y:auto}
 
 /* ---------- differential ---------- */
 .row{margin-bottom:11px}
@@ -268,6 +276,16 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
 
   <div class="hint"><kbd>space</kbd> or <kbd>→</kbd> advance · <kbd>←</kbd> back · <kbd>R</kbd> reset — advance manually while you narrate</div>
   <div class="hint" style="opacity:.6">Decision support only. Not a medical device. Not for clinical use.</div>
+</div>
+
+<div class="modal-overlay hide" id="doc-modal-overlay">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="doc-modal-title">
+    <div class="modal-head">
+      <div class="modal-title" id="doc-modal-title"></div>
+      <button type="button" class="modal-close" id="doc-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="doc-modal-body"></div>
+  </div>
 </div>
 
 <script>
@@ -842,6 +860,24 @@ $('doc-files').onchange=()=>{
   $('doc-send').disabled=docFiles.length===0;
 };
 
+// Full extracted text lives only in the modal now — the panel row itself
+// stays thumbnail + filename + char count, same shape as the scripted
+// step-3 blister-strip entry.
+function openDocModal(name, text){
+  $('doc-modal-title').textContent = name;
+  // textContent, not innerHTML — this is network-sourced OCR text.
+  $('doc-modal-body').textContent = text || '(no text extracted)';
+  $('doc-modal-overlay').classList.remove('hide');
+}
+function closeDocModal(){
+  $('doc-modal-overlay').classList.add('hide');
+}
+$('doc-modal-close').onclick = closeDocModal;
+$('doc-modal-overlay').onclick = e => { if(e.target === $('doc-modal-overlay')) closeDocModal(); };
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && !$('doc-modal-overlay').classList.contains('hide')) closeDocModal();
+});
+
 function renderScannedDocs(list){
   if(!list.length) return;
   if($('docs').querySelector('.empty')) $('docs').innerHTML='';
@@ -851,19 +887,8 @@ function renderScannedDocs(list){
     el.innerHTML=`<div class="thumb clickable" title="Click to view extracted text"></div><div class="docmeta">
       <div class="t">${escHtml(d.name)}</div>
       <span class="chip"><span class="k">OCR</span> ${d.chars} chars extracted</span>
-      <div class="doctext hide"></div>
     </div>`;
-    // Full OCR text set via textContent, not innerHTML — same network-sourced-text
-    // rule escHtml() exists for elsewhere in this file, just via the DOM API instead
-    // since this is a plain text box, not a template string.
-    el.querySelector('.doctext').textContent = d.text || '(no text extracted)';
-    const thumb = el.querySelector('.thumb');
-    thumb.onclick = () => {
-      const box = el.querySelector('.doctext');
-      const opening = box.classList.contains('hide');
-      box.classList.toggle('hide');
-      thumb.classList.toggle('active', opening);
-    };
+    el.querySelector('.thumb').onclick = () => openDocModal(d.name, d.text);
     $('docs').appendChild(el);
   });
   $('docn').textContent=$('docs').querySelectorAll('.doc').length+' scanned';
