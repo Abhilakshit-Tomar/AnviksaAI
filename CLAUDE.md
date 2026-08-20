@@ -69,9 +69,13 @@ thresholds, `abstain_entropy`.
 
 - **No chat interface.** Ever. It's the tell that this is a GPT wrapper, and
   nobody prompts anything during a 2-minute consult.
-- **The commit gate:** Can't-Miss stays collapsed until the clinician types
-  their own impression. Showing a differential first anchors the reader —
-  automation bias, the exact failure mode this tool exists to prevent.
+- **No commit gate (reversed 2026-08-21).** Differential and Can't-Miss are
+  always visible and update live as evidence arrives — no anchoring-bias
+  lock tied to the doctor's note. The note is a free-standing, always-
+  editable record the clinician can write and revise anytime; committing it
+  has no effect on what the panels show. This was a deliberate product
+  reversal, made explicitly aware it drops the tool's original anchoring-
+  bias mitigation — not an oversight.
 - Print the arithmetic on screen (`0.096 × 100`) under each risk score.
 - Abstain visibly when the posterior is flat rather than guessing.
 

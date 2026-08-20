@@ -171,6 +171,12 @@ class AssessRequest(BaseModel):
     language_code: str = "hi-IN"
 
 
+class AnalyzeRequest(BaseModel):
+    transcript: str = ""
+    doc_text: str = ""
+    actions_taken: list[str] = []
+
+
 def _run_assessment(audio_paths, documents, actions_taken, language_code):
     """The actual assess pipeline: transcribe -> scan -> extract -> engine ->
     best-effort TTS. Shared by both branches of assess() below — JSON
@@ -366,6 +372,24 @@ async def assess(request: Request):
         for p in tmp_paths:
             p.unlink(missing_ok=True)
 
+    return payload
+
+
+@app.post("/analyze")
+def analyze(req: AnalyzeRequest):
+    """Lean sibling of /assess: extract.extract() + engine.assess() only,
+    no capture.py calls at all (no STT/OCR/TTS, no Sarvam usage beyond
+    extract() itself). For recomputing Can't-Miss every time live evidence
+    changes (a new live recording lands, a new document gets scanned)
+    without re-burning Sarvam STT/vision quota re-transcribing/re-OCRing
+    text the caller already has from an earlier /assess response — see
+    web/index.html's runAnalyze()."""
+    try:
+        evidence = extract.extract(req.transcript, req.doc_text)
+    except Exception as e:
+        raise HTTPException(502, f"evidence extraction failed: {e}")
+    payload = get_engine().assess(evidence, actions_taken=req.actions_taken)
+    payload["_evidence"] = evidence
     return payload
 
 

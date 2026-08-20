@@ -294,7 +294,6 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
 <script>
 const ICON_CRIT='<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 15 14H1L8 1.5Zm0 4.2a.8.8 0 0 0-.8.85l.2 3.2a.6.6 0 0 0 1.2 0l.2-3.2A.8.8 0 0 0 8 5.7Zm0 5.3a.85.85 0 1 0 0 1.7.85.85 0 0 0 0-1.7Z"/></svg>';
 const ICON_MIS='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg>';
-const ICON_LOCK='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:15px;height:15px;display:block;margin:0 auto 9px"><rect x="3.2" y="7" width="9.6" height="6.4" rx="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7"/></svg>';
 const ICON_PLAY='<svg viewBox="0 0 16 16" fill="currentColor" style="width:9px;height:9px;display:block"><path d="M4 2.3v11.4a.6.6 0 0 0 .92.5l9-5.7a.6.6 0 0 0 0-1l-9-5.7a.6.6 0 0 0-.92.5Z"/></svg>';
 
 // ===================================================================
@@ -599,54 +598,106 @@ function utt(u){
 }
 function svc(id,on){$(id).classList.toggle('on',on)}
 
-const LOCKED=`<div class="empty locked">${ICON_LOCK}Held back until the clinician records their own impression.<br><span>Showing a differential first would anchor the reader — the failure mode this tool exists to prevent.</span></div>`;
-
-const LABELS=['Start consultation','Continue','Scan patient records','Record impression','Type + commit your impression','Compute best question','Ask it aloud','Update posterior','Order ECG + troponin + d-dimer','Draft for record','Replay'];
+const LABELS=['Start consultation','Continue','Scan patient records','Record impression','Type your impression','Compute best question','Ask it aloud','Update posterior','Order ECG + troponin + d-dimer','Draft for record','Replay'];
 
 // ===================================================================
-// The commit gate. Differential and Can't-Miss are computed from the
-// live STAGES data as the scripted steps progress (see step 5/8/9
-// below), but that data is only ever PAINTED into #dx/#cm once the
-// clinician has typed their own note and pressed commit — this is the
-// real trigger CLAUDE.md calls for, replacing the old step===1/4
-// scripted auto-reveal. dxState/cmState hold "what would be shown" so
-// that pressing commit mid-stage (or STAGES advancing while still
-// uncommitted) paints the right content the moment it fires, without
-// needing the step machinery to know anything about commit state.
-// Highest-Value Question is untouched by any of this — CLAUDE.md only
-// flags the differential/Can't-Miss as the anchoring risk.
+// Differential and Can't-Miss paint the instant dxState/cmState changes —
+// no gate. CLAUDE.md originally required these held back until the
+// clinician committed their own note first (anchoring-bias mitigation);
+// that was a deliberate, explicit reversal on 2026-08-21, not an
+// oversight — see CLAUDE.md's UI rules for the record of that decision.
+// The doctor's note (commitImpression() below) is now a free-standing,
+// always-editable record with no effect on these panels.
 // ===================================================================
-let committed=false;
 let dxState=null, cmState=null;
 
-function lockPanels(){
-  $('cm').innerHTML=LOCKED;
-  $('dx').innerHTML=LOCKED;
-  $('dxtag').textContent='';
-}
+// CLAUDE.md: "Abstain visibly when the posterior is flat rather than
+// guessing." An abstaining stage has differential=[]/cant_miss=[] —
+// bars()/cmHtml() on an empty list is '', so without this check the panel
+// would silently go blank, which reads as broken, not as an intentional
+// abstain.
 function paintDX(){
-  if(!committed || !dxState) return;
-  paintBars($('dx'), bars(toBars(STAGES[dxState.idx]), dxState.prevIdx!=null?toBars(STAGES[dxState.prevIdx]):undefined));
+  if(!dxState) return;
+  if(dxState.stage.abstaining){
+    $('dx').innerHTML=`<div class="empty">${dxState.stage.message || 'Insufficient information to rank.'}</div>`;
+    $('dxtag').textContent='';
+    return;
+  }
+  const prevUsable=dxState.prevStage && !dxState.prevStage.abstaining ? toBars(dxState.prevStage) : undefined;
+  paintBars($('dx'), bars(toBars(dxState.stage), prevUsable));
   $('dxtag').textContent='naive bayes · DDXPlus';
 }
 function paintCM(){
-  if(!committed || !cmState) return;
-  $('cm').innerHTML=cmHtml(toCM(STAGES[cmState.idx]),true);
-  if(cmState.tag) $('cmtag').textContent=cmState.tag;
+  if(!cmState) return;
+  if(cmState.stage.abstaining){
+    $('cm').innerHTML=`<div class="empty">${cmState.stage.message || 'Insufficient information to rank.'}</div>`;
+    $('cmtag').textContent=cmState.tag || 'ranked by P × harm-if-missed';
+    return;
+  }
+  $('cm').innerHTML=cmHtml(toCM(cmState.stage),true);
+  $('cmtag').textContent=cmState.tag || 'ranked by P × harm-if-missed';
 }
+
+// ===================================================================
+// Live evidence accumulator — the SAME dxState/cmState/paintDX/paintCM
+// above, just fed by real live input (mic recording, document upload)
+// instead of the scripted STAGES snapshots. Every time either panel picks
+// up new evidence, this recomputes Can't-Miss from the FULL picture
+// (scripted transcript/doc baseline the STAGES calls already established,
+// plus whatever's been recorded/uploaded live) via /analyze — extract +
+// engine only, no re-transcription/re-OCR of text already in hand.
+//
+// Debounced (500ms of quiet) so a burst of live events — several
+// documents uploaded back to back, a recording finishing right as a
+// scripted step advances — collapses into ONE /analyze call with
+// everything folded in, not one call per event racing the others. No
+// gate to speak of anymore — paintDX/paintCM run unconditionally the
+// moment a response lands.
+// ===================================================================
+let liveTranscriptExtra='', liveDocTextExtra='';
+let analyzeTimer=null, analyzeInFlight=false, analyzeQueued=false;
+
+function scheduleAnalyze(){
+  if(analyzeTimer) clearTimeout(analyzeTimer);
+  analyzeTimer=setTimeout(runAnalyze, 500);
+}
+async function runAnalyze(){
+  if(analyzeInFlight){ analyzeQueued=true; return; }
+  if(!STAGES || !STAGES.length) return;   // no baseline yet to combine with
+  analyzeInFlight=true;
+  const base=STAGES[STAGES.length-1];
+  const transcript=(base.transcript||'') + (liveTranscriptExtra?('\n'+liveTranscriptExtra):'');
+  const docText=(base.scanned_documents||[]).map(d=>d.text).join('\n\n')
+              + (liveDocTextExtra?('\n\n'+liveDocTextExtra):'');
+  try{
+    const res=await fetch('/analyze', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({transcript, doc_text: docText, actions_taken: []}),
+    });
+    const data=await res.json().catch(()=>null);
+    if(res.ok && data){
+      dxState={stage:data, prevStage:dxState?dxState.stage:undefined};
+      cmState={stage:data, tag:'live update · naive bayes'};
+      paintDX(); paintCM();
+    }
+  }catch(e){ /* best-effort — a failed live recompute leaves the last good state on screen */ }
+  finally{
+    analyzeInFlight=false;
+    if(analyzeQueued){ analyzeQueued=false; scheduleAnalyze(); }
+  }
+}
+// No gating effect — the doctor can commit, keep typing, and re-commit as
+// many times as they want. This only marks/timestamps the note for the
+// record; it never touches dxState/cmState/paintDX/paintCM.
 function commitImpression(){
   const text=$('dnote-input').value.trim();
-  if(!text || committed) return;
-  committed=true;
-  $('dnote-input').disabled=true;
-  $('dnote-commit').disabled=true;
-  $('dnote-commit').textContent='Committed';
-  paintDX();
-  paintCM();
+  if(!text) return;
+  $('dnote-commit').textContent='Committed '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
 }
 $('dnote-commit').onclick=commitImpression;
 $('dnote-input').addEventListener('input',()=>{
-  $('dnote-commit').disabled = committed || !$('dnote-input').value.trim();
+  $('dnote-commit').disabled = !$('dnote-input').value.trim();
+  if($('dnote-commit').textContent!=='Commit impression') $('dnote-commit').textContent='Commit impression';
 });
 $('dnote-input').addEventListener('keydown', e=>{
   if(e.key==='Enter' && (e.ctrlKey||e.metaKey)){ e.preventDefault(); commitImpression(); }
@@ -661,7 +712,7 @@ function render(){
   if(step>=3){svc('s-vis',1);}
   if(step>=6){svc('s-tts',1);}
 
-  if(step===1){$('tx').innerHTML='';UTT.slice(0,2).forEach(utt);lockPanels();}
+  if(step===1){$('tx').innerHTML='';UTT.slice(0,2).forEach(utt);}
   if(step===2){UTT.slice(2).forEach(utt);}
   if(step===3){
     $('docn').textContent='1 scanned';
@@ -673,7 +724,7 @@ function render(){
     </div></div>`;
   }
   if(step===5){
-    dxState={idx:0};cmState={idx:0};
+    dxState={stage:STAGES[0]};cmState={stage:STAGES[0]};
     paintDX();paintCM();
     $('mis').innerHTML=toMIS(STAGES[0]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
   }
@@ -684,7 +735,7 @@ function render(){
   if(step===7){utt({...Q_ASK,audioB64:STAGES[0].question_audio_b64});}
   if(step===8){
     utt(Q_ANS);stopQuestionAudio();
-    dxState={idx:1,prevIdx:0};cmState={idx:1};
+    dxState={stage:STAGES[1],prevStage:STAGES[0]};cmState={stage:STAGES[1]};
     paintDX();paintCM();
     $('mis').innerHTML=toMIS(STAGES[1]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
     $('qbody').innerHTML='<div class="empty">Answered. No remaining question changes management.</div>';
@@ -692,7 +743,7 @@ function render(){
   }
   if(step===9){
     // the panel must be able to FINISH. this is the alert-fatigue answer.
-    cmState={idx:2,tag:'ECG · troponin · d-dimer done'};
+    cmState={stage:STAGES[2],tag:'ECG · troponin · d-dimer done'};
     paintCM();
     // Also caught while fixing the block above: this line was still
     // Marathi ("आणि") too — missed by the earlier sweep since it's inline
@@ -721,13 +772,35 @@ function go(d){
   if(n>STEPS){reset();return}
   if(n<0)return;
   if(d>0){step=n;render()}
-  else{const t=n;reset();for(let i=1;i<=t;i++){step=i;render()}}
+  else{const t=n;resetNarration();for(let i=1;i<=t;i++){step=i;render()}}
+}
+// Rewinds only what the scripted step choreography itself owns (transcript
+// panel, doc chips, service lights, the closing note card) so the clinician
+// can step back to re-check something without it looking like a reset —
+// dnote-input/dxState/cmState/live evidence accumulator are real,
+// already-established information, not narration playback state, and must
+// survive backward navigation. Going forward again re-runs the same step
+// blocks and repaints identically, so nothing here needs to be idempotent
+// beyond what render() already is. Used by go()'s back branch; the "R"/
+// Replay path below still wants the FULL reset(), since that's a
+// deliberate start-over, not a review.
+function resetNarration(){
+  stopQuestionAudio();
+  step=0;
+  $('tx').innerHTML='<div class="empty">Waiting for consultation to begin.</div>';
+  $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
+  $('docn').textContent='0 scanned';$('mode').textContent='idle';
+  $('notecard').classList.add('hide');
+  ['s-stt','s-vis','s-tts'].forEach(i=>svc(i,0));
 }
 function reset(){
   stopQuestionAudio();
   step=0;
-  committed=false;dxState=null;cmState=null;
-  $('dnote-input').value='';$('dnote-input').disabled=false;
+  dxState=null;cmState=null;
+  liveTranscriptExtra='';liveDocTextExtra='';
+  if(analyzeTimer){clearTimeout(analyzeTimer);analyzeTimer=null;}
+  analyzeQueued=false;
+  $('dnote-input').value='';
   $('dnote-commit').disabled=true;$('dnote-commit').textContent='Commit impression';
   $('tx').innerHTML='<div class="empty">Waiting for consultation to begin.</div>';
   $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
@@ -890,6 +963,10 @@ async function liveSend(){
       e: data.transcript_en ? escHtml(data.transcript_en) : '',
       audioSrc: URL.createObjectURL(liveBlob),
     });
+    if(data.transcript){
+      liveTranscriptExtra += (liveTranscriptExtra?'\n':'') + data.transcript;
+      scheduleAnalyze();
+    }
     $('live-result').textContent='Transcribed — added to the Consultation panel above.';
   }catch(e){
     $('live-result').textContent='Live transcription failed: '+e.message;
@@ -971,6 +1048,10 @@ async function docSend(){
     const data=await res.json().catch(()=>({}));
     if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
     renderScannedDocs(data.scanned_documents || []);
+    if((data.scanned_documents||[]).length){
+      liveDocTextExtra += (liveDocTextExtra?'\n\n':'') + data.scanned_documents.map(d=>d.text).join('\n\n');
+      scheduleAnalyze();
+    }
     $('doc-result').textContent='Scanned — panel above updated.';
   }catch(e){
     $('doc-result').textContent='Document scan failed: '+e.message;
