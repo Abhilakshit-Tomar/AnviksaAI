@@ -1,0 +1,27 @@
+[
+  {
+    "speaker": "patient",
+    "text": "छाती में भारीपन महसूस हो रहा है और सांस लेने में तकलीफ हो रही है।",
+    "file": "mock_line_00_patient.wav"
+  },
+  {
+    "speaker": "patient",
+    "text": "कल रात से। अचानक शुरू हुआ। दिल तेज़ धड़क रहा है।",
+    "file": "mock_line_01_patient.wav"
+  },
+  {
+    "speaker": "doctor",
+    "text": "कोई टेंशन है क्या? घर में सब ठीक है ना?",
+    "file": "mock_line_02_doctor.wav"
+  },
+  {
+    "speaker": "patient",
+    "text": "हाँ, घबराहट सी हो रही है, पर घर में सब ठीक है। चार दिन पहले फ्लाइट से वापस आई।",
+    "file": "mock_line_03_patient.wav"
+  },
+  {
+    "speaker": "patient",
+    "text": "हाँ, बाएं पैर की पिंडली में सूजन है।",
+    "file": "mock_line_04_patient.wav"
+  }
+]

@@ -54,8 +54,13 @@ button:disabled{opacity:.35;cursor:default}
 .utt{padding:9px 0;border-bottom:1px solid var(--grid);opacity:0;animation:fade .35s ease forwards}
 .utt:last-child{border-bottom:0}
 @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-.who{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+.who{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;display:flex;align-items:center;gap:6px}
 .utt.sys .who{color:var(--blue)}
+.playbtn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;border-radius:3px;border:1px solid var(--hair);background:var(--surface-2);color:var(--muted);cursor:pointer}
+.playbtn:hover{color:var(--blue);border-color:var(--blue)}
+.playbtn.playing{color:var(--blue);border-color:var(--blue);animation:btnpulse 1s ease-in-out infinite}
+button.primary.playing{animation:btnpulse 1s ease-in-out infinite}
+@keyframes btnpulse{0%,100%{box-shadow:0 0 0 0 rgba(57,135,229,.55)}50%{box-shadow:0 0 0 6px rgba(57,135,229,0)}}
 .orig{font-size:14.5px;color:var(--ink);line-height:1.55}
 .en{font-size:12.5px;color:var(--muted);margin-top:3px;font-style:italic}
 .empty{color:var(--muted);font-size:13px;padding:20px 0;text-align:center}
@@ -142,7 +147,7 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
 
   <div class="bar">
     <div class="brand">AnviksaAI <span>/ demo prototype</span></div>
-    <div class="patient">F, <b>34</b> · OPD 2:14 · <b>मराठी</b></div>
+    <div class="patient">F, <b>34</b> · OPD 2:14 · <b>हिंदी</b></div>
     <div class="spacer"></div>
     <div class="svc">
       <span id="s-stt"><i></i>saaras-v3</span>
@@ -204,45 +209,67 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
   </div>
 
   <div class="hint"><kbd>space</kbd> or <kbd>→</kbd> advance · <kbd>←</kbd> back · <kbd>R</kbd> reset — advance manually while you narrate</div>
+  <div class="hint" style="opacity:.6">Decision support only. Not a medical device. Not for clinical use.</div>
 </div>
 
 <script>
 const ICON_CRIT='<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 15 14H1L8 1.5Zm0 4.2a.8.8 0 0 0-.8.85l.2 3.2a.6.6 0 0 0 1.2 0l.2-3.2A.8.8 0 0 0 8 5.7Zm0 5.3a.85.85 0 1 0 0 1.7.85.85 0 0 0 0-1.7Z"/></svg>';
 const ICON_MIS='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg>';
 const ICON_LOCK='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:15px;height:15px;display:block;margin:0 auto 9px"><rect x="3.2" y="7" width="9.6" height="6.4" rx="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7"/></svg>';
+const ICON_PLAY='<svg viewBox="0 0 16 16" fill="currentColor" style="width:9px;height:9px;display:block"><path d="M4 2.3v11.4a.6.6 0 0 0 .92.5l9-5.7a.6.6 0 0 0 0-1l-9-5.7a.6.6 0 0 0-.92.5Z"/></svg>';
 
 // ===================================================================
 // Differential, Can't-Miss, Doesn't Fit and the question card are built
-// entirely from contract.json — real engine.py output over 1,025,602
-// DDXPlus records, produced by:
-//
-//   python demo_case.py --dump-all
+// from THREE LIVE POST /assess calls (main.py -> capture.py -> extract.py
+// -> engine.py, real Sarvam STT/vision + Gemini extraction + real engine
+// output over 1,025,602 DDXPlus records) — not a pre-generated
+// contract.json anymore. Each call replays the demo's real mock audio
+// (demo/mock_hi-IN/) and the blister-strip photo, mirroring the three
+// evidence stages demo_case.py's STAGES[1:4] hand-built for the static
+// version: pill-strip + travel, + the calf-swelling answer, + the
+// ordered tests (which trigger PE's exclusion gate).
 //
 // Nothing under STAGES below is hand-typed; the functions further down
 // (toBars/toCM/toMIS/toQBODY) only reformat what the engine returned.
 // The transcript lines, doc-scan chips, doctor's note and closing note
 // snippet ARE still hand-authored demo content — engine.py has no
-// opinion on Marathi phrasing or clinical note prose, so those stay as
-// scripted constants until capture.py/extract.py exist (day-plan.md
-// steps 3-5).
+// opinion on Hindi phrasing or clinical note prose, so those stay as
+// scripted constants driving the step choreography independently of
+// the live STAGES data.
 // ===================================================================
 let STAGES = null;      // [stage "2 + pill strip + travel", stage "3 + calf", stage "4 + tests"]
 let LOAD_ERROR = null;
 
 async function loadContract(){
+  const AUDIO_DIR = 'demo/mock_hi-IN/';
+  const LINES = ['mock_line_00_patient.wav', 'mock_line_01_patient.wav',
+                  'mock_line_02_doctor.wav', 'mock_line_03_patient.wav',
+                  'mock_line_04_patient.wav'];
+  const IMAGE = AUDIO_DIR + 'mock_blister_strip.png';
+  const path = f => AUDIO_DIR + f;
+  // These audio_paths/image_path are resolved server-side by main.py
+  // (Path(p).exists()), not fetched by the browser — they must be valid
+  // relative to the directory main.py itself is run from (the repo root).
+  const CALLS = [
+    {audio_paths: LINES.slice(0, 4).map(path), image_path: IMAGE, actions_taken: []},
+    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: []},
+    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: ['ecg', 'troponin', 'd_dimer']},
+  ];
   try{
-    // web/index.html fetching ../contract.json assumes the repo root is
-    // served over http (e.g. `python -m http.server` run from the repo
-    // root, or main.py once it exists). Opened directly as a file:// URL,
-    // fetch() of a local file is blocked by the browser and this will
-    // fail — that's expected until there's a server in front of it.
-    const res = await fetch('../contract.json', {cache:'no-store'});
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const doc = await res.json();
-    if(!doc.stages || doc.stages.length<3){
-      throw new Error('contract.json has no "stages" array — run: python demo_case.py --dump-all');
+    const stages = [];
+    for(const body of CALLS){
+      const res = await fetch('/assess', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      if(!res.ok){
+        const err = await res.json().catch(()=>({detail: 'HTTP '+res.status}));
+        throw new Error(err.detail || ('HTTP '+res.status));
+      }
+      stages.push(await res.json());
     }
-    STAGES = doc.stages;
+    STAGES = stages;
   }catch(e){
     LOAD_ERROR = e.message;
   }
@@ -278,10 +305,16 @@ function toMIS(stage){
 // render the true #1 question instead (then the transcript needs a
 // rewrite to match).
 const FOLLOW_QUESTION_ID = 'E_151';
-// Only translations a human has actually reviewed go here (day-plan.md:
-// "Get the Marathi checked by a native speaker"). Any question without an
-// entry renders English-only rather than a guessed translation.
-const MARATHI_Q = { E_151: 'तुमच्या शरीरावर कुठे सूज आहे का?' };
+// Only translations a human has actually reviewed go here (day-plan.md's
+// rule — originally "Get the Marathi checked by a native speaker", now
+// applies to Hindi since that's tonight's demo language). Any question
+// without an entry renders English-only rather than a guessed translation.
+//
+// UNVERIFIED: hand-written Hindi, not checked by a native speaker — same
+// caveat generate_mock_demo.py's Hindi lines carry. Matches the text
+// main.py sends to bulbul-v3 for this question's spoken audio (see
+// HINDI_QUESTIONS in main.py) — keep both in sync if this changes.
+const HINDI_Q = { E_151: 'क्या आपके शरीर में कहीं सूजन है?' };
 
 function pickQuestion(stage){
   if(FOLLOW_QUESTION_ID && stage.best_question && stage.best_question.id!==FOLLOW_QUESTION_ID){
@@ -291,6 +324,7 @@ function pickQuestion(stage){
   return stage.best_question;
 }
 function branchNote(p, diffTop){
+  if(diffTop===undefined) return '';
   if(p>=diffTop) return 'top of differential';
   if(p<0.05) return 'drops off list';
   return '';
@@ -298,8 +332,13 @@ function branchNote(p, diffTop){
 function toQBODY(stage){
   const q=pickQuestion(stage);
   if(!q) return null;
-  const diffTop=stage.differential[0].p;
-  const orig=MARATHI_Q[q.id];
+  // stage.differential is empty while the engine is abstaining (flat
+  // posterior) — best_question can still exist in that state (engine.py
+  // computes it independently of the abstain gate), so this can't assume
+  // a non-empty differential the way the old hand-picked contract.json
+  // stages always had.
+  const diffTop=stage.differential.length?stage.differential[0].p:undefined;
+  const orig=HINDI_Q[q.id];
   const runners=(stage.runners_up||[]).filter(r=>r.id!==q.id).slice(0,3);
   const yn=(p)=>{const note=branchNote(p,diffTop);return (p*100).toFixed(1)+'%'+(note?` · ${note}`:'');};
   return {
@@ -313,7 +352,7 @@ function toQBODY(stage){
     </div>
     <div class="ask">
       <button class="primary" id="askbtn">Ask this aloud</button>
-      <span class="speak" id="spk"><span class="wave"><i></i><i></i><i></i><i></i></span>bulbul-v3 · मराठी</span>
+      <span class="speak" id="spk"><span class="wave"><i></i><i></i><i></i><i></i></span>bulbul-v3 · हिंदी</span>
     </div>
     <div class="alts">
       ${runners.map(r=>`<div class="alt"><span class="ig">${r.ig.toFixed(3)} bit</span><span>${r.en}</span></div>`).join('')}
@@ -331,17 +370,58 @@ PE considered. D-dimer + CTPA ordered; ECG and troponin
 done. Panic attack less likely given the calf finding
 and the two unrecorded risk factors.`;
 
+// The real Hindi lines from demo/mock_hi-IN/mock_consult_lines.json — the
+// same audio files the live /assess calls above actually transcribe, not
+// a fresh translation. Line 3 (the E_16 affirmation — "haan, ghabraahat
+// si ho rahi hai") is the corrected version: the patient admits current
+// anxiety, unlike the earlier Marathi draft where she denied it outright.
+// English glosses are hand-written, not checked by a native speaker.
+// audioSrc points at the ACTUAL recorded file for each line (served by
+// main.py's /demo static mount) — real audio, not a re-synthesis, for the
+// four consult lines and the calf-swelling answer. Q_ASK has no audioSrc
+// here because it isn't a recording: it's AnviksaAI's own synthesized
+// voice, attached dynamically at the step-7 call site from the live
+// STAGES[0].question_audio_b64 (bulbul-v3 output). The step-9 doctor line
+// further down (order tests) gets no play button at all — it was never
+// recorded and isn't AnviksaAI's speech either, so there's no real audio
+// to attach without fabricating a "recording" that never happened.
 const UTT=[
- {w:'Patient',o:'छातीत जड वाटतंय आणि श्वास घ्यायला त्रास होतोय.',e:"My chest feels heavy and I'm having trouble breathing."},
- {w:'Patient',o:'काल रात्रीपासून. अचानक सुरू झालं. छाती धडधडतेय.',e:'Since last night. It started suddenly. My heart is racing.'},
- {w:'Doctor',o:'काही टेन्शन आहे का? घरी सगळं ठीक आहे ना?',e:'Any stress? Is everything alright at home?'},
- {w:'Patient',o:'नाही, तसं काही नाही. चार दिवसांपूर्वी विमानाने परत आले.',e:'No, nothing like that. I flew back four days ago.'}];
-const Q_ASK={w:'AnviksaAI → patient',o:'तुमच्या शरीरावर कुठे सूज आहे का?',e:'Do you have swelling anywhere on your body?',sys:1};
-const Q_ANS={w:'Patient',o:'हो, डाव्या पायाच्या पोटरीला सूज आहे.',e:'Yes, my left calf is swollen.'};
+ {w:'Patient',o:'छाती में भारीपन महसूस हो रहा है और सांस लेने में तकलीफ हो रही है।',e:"My chest feels heavy and I'm having trouble breathing.",audioSrc:'/demo/mock_hi-IN/mock_line_00_patient.wav'},
+ {w:'Patient',o:'कल रात से। अचानक शुरू हुआ। दिल तेज़ धड़क रहा है।',e:'Since last night. It started suddenly. My heart is racing.',audioSrc:'/demo/mock_hi-IN/mock_line_01_patient.wav'},
+ {w:'Doctor',o:'कोई टेंशन है क्या? घर में सब ठीक है ना?',e:'Any stress? Is everything alright at home?',audioSrc:'/demo/mock_hi-IN/mock_line_02_doctor.wav'},
+ {w:'Patient',o:'हाँ, घबराहट सी हो रही है, पर घर में सब ठीक है। चार दिन पहले फ्लाइट से वापस आई।',e:"Yes, I've been feeling anxious, but everything's fine at home. I flew back four days ago.",audioSrc:'/demo/mock_hi-IN/mock_line_03_patient.wav'}];
+const Q_ASK={w:'AnviksaAI → patient',o:'क्या आपके शरीर में कहीं सूजन है?',e:'Do you have swelling anywhere on your body?',sys:1};
+const Q_ANS={w:'Patient',o:'हाँ, बाएं पैर की पिंडली में सूजन है।',e:'Yes, my left calf is swollen.',audioSrc:'/demo/mock_hi-IN/mock_line_04_patient.wav'};
 
 const $=id=>document.getElementById(id);
 let step=0;
 const STEPS=10;
+let currentAudio=null;
+
+// Shared by every play button — the per-line ones (real recorded audio,
+// served from /demo) and "Ask this aloud" (base64 WAV from main.py).
+// src is anything the Audio element accepts: a URL or a
+// data:audio/wav;base64,... string. onDone (if given) fires once, either
+// when the clip finishes naturally OR when it's interrupted (a different
+// button pressed, step advanced, reset) — callers use it to turn their own
+// "playing" animation off, so stopping never leaves a button stuck mid-spin.
+let currentAudioStop=null;
+function playAudio(src, onDone){
+  if(currentAudio){currentAudio.pause();currentAudio=null;}
+  if(currentAudioStop){const stop=currentAudioStop;currentAudioStop=null;stop();}
+  if(!src)return;
+  const a=new Audio(src);
+  currentAudio=a; currentAudioStop=onDone||null;
+  const finish=()=>{
+    if(currentAudio===a){currentAudio=null;currentAudioStop=null;}
+    if(onDone)onDone();
+  };
+  a.addEventListener('ended',finish,{once:true});
+  a.play().catch(finish);
+}
+function stopQuestionAudio(){
+  playAudio(null);
+}
 
 function bars(list,prev){
   const map=prev?Object.fromEntries(prev.map(d=>[d[0],d[1]])):null;
@@ -369,7 +449,13 @@ function cmHtml(list,fire){
 function utt(u){
   const d=document.createElement('div');
   d.className='utt'+(u.sys?' sys':'');
-  d.innerHTML=`<div class="who">${u.w}</div><div class="orig">${u.o}</div><div class="en">${u.e}</div>`;
+  const hasAudio=u.audioSrc||u.audioB64;
+  const src=u.audioB64?('data:audio/wav;base64,'+u.audioB64):u.audioSrc;
+  d.innerHTML=`<div class="who">${u.w}${hasAudio?`<button class="playbtn" title="Play audio" type="button">${ICON_PLAY}</button>`:''}</div><div class="orig">${u.o}</div><div class="en">${u.e}</div>`;
+  if(hasAudio){
+    const btn=d.querySelector('.playbtn');
+    btn.onclick=()=>{btn.classList.add('playing');playAudio(src,()=>btn.classList.remove('playing'));};
+  }
   if($('tx').querySelector('.empty'))$('tx').innerHTML='';
   $('tx').appendChild(d); $('tx').parentElement.scrollTop=1e5;
 }
@@ -409,9 +495,9 @@ function render(){
     const qb=toQBODY(STAGES[0]);
     $('qbody').innerHTML=qb.html;$('igtag').textContent='IG '+qb.ig.toFixed(3)+' bit';bindAsk();
   }
-  if(step===7){utt(Q_ASK);$('spk')&&$('spk').classList.add('active');}
+  if(step===7){utt({...Q_ASK,audioB64:STAGES[0].question_audio_b64});}
   if(step===8){
-    utt(Q_ANS);$('spk')&&$('spk').classList.remove('active');
+    utt(Q_ANS);stopQuestionAudio();
     paintBars($('dx'),bars(toBars(STAGES[1]),toBars(STAGES[0])));
     $('cm').innerHTML=cmHtml(toCM(STAGES[1]),true);
     $('mis').innerHTML=toMIS(STAGES[1]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
@@ -422,11 +508,28 @@ function render(){
     // the panel must be able to FINISH. this is the alert-fatigue answer.
     $('cm').innerHTML=cmHtml(toCM(STAGES[2]),true);
     $('cmtag').textContent='ECG · troponin · d-dimer done';
-    utt({w:'Doctor',o:'ECG, troponin आणि d-dimer करून घ्या.',e:'Get an ECG, troponin and d-dimer done.'});
+    // Also caught while fixing the block above: this line was still
+    // Marathi ("आणि") too — missed by the earlier sweep since it's inline
+    // here, not near the UTT/Q_ASK/Q_ANS declarations. Hand-written Hindi,
+    // unverified, same caveat as the rest of this file's Hindi content.
+    utt({w:'Doctor',o:'ECG, troponin और d-dimer करवा लीजिए।',e:'Get an ECG, troponin and d-dimer done.'});
   }
   if(step===10){$('notecard').classList.remove('hide');$('snip').textContent=SNIP;}
 }
-function bindAsk(){const b=$('askbtn');if(b)b.onclick=()=>{if(step===5)go(1)};}
+// The button now ONLY plays audio + animates — it no longer advances the
+// step (a separate earlier bug had it silently doing go(1) and nothing
+// else, inherited from before audio existed). Reaching step 7 via the
+// main Next button/Space no longer auto-plays either — audio now only
+// ever starts from an explicit press of this button or a per-line play
+// button in utt(), never as a side effect of navigating.
+function askAloud(){
+  const b64=STAGES[0]&&STAGES[0].question_audio_b64;
+  if(!b64)return;
+  const btn=$('askbtn'),spk=$('spk');
+  btn&&btn.classList.add('playing');spk&&spk.classList.add('active');
+  playAudio('data:audio/wav;base64,'+b64,()=>{btn&&btn.classList.remove('playing');spk&&spk.classList.remove('active');});
+}
+function bindAsk(){const b=$('askbtn');if(b)b.onclick=askAloud;}
 function go(d){
   const n=step+d;
   if(n>STEPS){reset();return}
@@ -435,6 +538,7 @@ function go(d){
   else{const t=n;reset();for(let i=1;i<=t;i++){step=i;render()}}
 }
 function reset(){
+  stopQuestionAudio();
   step=0;
   $('tx').innerHTML='<div class="empty">Waiting for consultation to begin.</div>';
   $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
@@ -457,11 +561,11 @@ document.addEventListener('keydown',e=>{
 
 (async function boot(){
   $('next').disabled=true;
-  $('next').textContent='Loading contract.json…';
+  $('next').textContent='Running live assessment…';
   await loadContract();
   if(LOAD_ERROR){
-    $('next').textContent='contract.json failed to load';
-    $('tx').innerHTML=`<div class="empty">Could not load contract.json: ${LOAD_ERROR}<br>Run <code>python demo_case.py --dump-all</code> in the repo root, serve this folder over http (not file://), then reload.</div>`;
+    $('next').textContent='Live /assess call failed';
+    $('tx').innerHTML=`<div class="empty">Could not load live assessment: ${LOAD_ERROR}<br>Confirm main.py is running (python main.py) and reachable at this origin, then reload.</div>`;
     return;
   }
   $('next').disabled=false;

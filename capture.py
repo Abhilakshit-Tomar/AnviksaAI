@@ -75,7 +75,7 @@ def _with_retry(fn, *args, max_retries=5, **kwargs):
 
 
 # --------------------------------------------------------------------------
-def transcribe(path, language_code="mr-IN", num_speakers=2):
+def transcribe(path, language_code="hi-IN", num_speakers=2):
     """Audio file -> diarized transcript, via saaras-v3 BATCH speech-to-text
     (CLAUDE.md's actual spec: "saaras-v3 batch STT (diarized)").
 
@@ -180,7 +180,7 @@ def read_image(path, language="en-IN"):
 
 
 # --------------------------------------------------------------------------
-def speak(text, out_path, language_code="mr-IN", speaker="shubh"):
+def speak(text, out_path, language_code="hi-IN", speaker="shubh"):
     """Text -> spoken audio, via bulbul-v3. Writes a WAV file at out_path
     and returns out_path. Cached by (text, language_code, speaker), so the
     same line is never re-synthesised — matters for both rate limits and

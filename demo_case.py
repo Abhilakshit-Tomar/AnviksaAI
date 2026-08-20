@@ -8,7 +8,7 @@ Frontend lane: run `--dump` and build against the file. It is REAL engine
 output over real counts, not a hand-written mock, so if it renders correctly
 the integration is already most of the way done.
 
-34F, Marathi. Chest tightness and breathlessness since last night, sudden
+34F, Hindi. Chest tightness and breathlessness since last night, sudden
 onset. The doctor asks whether she is stressed and writes "?anxiety / panic
 attack". A photographed blister strip turns out to be a combined oral
 contraceptive; the transcript mentions a flight home four days ago.

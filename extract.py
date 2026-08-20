@@ -72,23 +72,43 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
-# ^ Verified 2026-08-20 with a real forced function-calling call against
-# this project's GEMINI_API_KEY — gemini-2.5-pro/-flash are dead (404,
-# "no longer available to new users"), gemini-3.1-pro-preview 429s on this
-# key's free-tier quota. Override via GEMINI_MODEL in .env if quota opens
-# up on a stronger model later.
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+# ^ LOCKED for tonight (explicit decision, not re-litigated here) despite
+# an earlier finding that this model can fabricate PRESENT findings on
+# undiscussed topics in side-by-side testing against other models — see
+# git log. gemini-3.7-flash was ruled out separately: this key gets only
+# 20 requests/DAY for it, and it failed a real verification call twice in
+# a row even with retries. gemini-2.5-pro/-flash are dead (404),
+# gemini-3.1-pro-preview 429s on this key's free-tier quota.
 
 def _with_retry(fn, *args, max_retries=5, **kwargs):
-    """Retries on 429 (quota) and 503 (observed to be genuinely
-    intermittent on gemini-3.7-flash, not a hard ceiling — see module
-    docstring's RELIABILITY note)."""
+    """Retries only genuinely transient errors (500/502/503/504 that
+    AREN'T quota exhaustion). Fails fast on 403/429 or any 5xx whose raw
+    body signals quota/rate-limit exhaustion — those won't succeed on
+    retry, so burning multiple real calls on them just wastes quota
+    faster for no benefit. Checked against the real APIError.status/
+    .details fields (Google's own RESOURCE_EXHAUSTED status string, or a
+    quota/rate keyword in the raw body), not guessed — confirmed 2026-08-20
+    that a plain "high demand" 503 (status=UNAVAILABLE, no quota/rate
+    keyword) is the genuinely-transient case worth retrying, while the
+    20-req/day cap surfaces as 429 with status=RESOURCE_EXHAUSTED and the
+    literal word "quota" in the body."""
     delay = 2.0
     for attempt in range(max_retries):
         try:
             return fn(*args, **kwargs)
         except APIError as e:
-            if e.code in (429, 503) and attempt < max_retries - 1:
+            body_text = (json.dumps(e.details) if e.details else (e.message or "")).lower()
+            is_quota_exhaustion = (
+                e.code in (403, 429)
+                or e.status == "RESOURCE_EXHAUSTED"
+                or "quota" in body_text
+                or "rate limit" in body_text
+                or "rate-limit" in body_text
+            )
+            if is_quota_exhaustion:
+                raise
+            if e.code in (500, 502, 503, 504) and attempt < max_retries - 1:
                 time.sleep(delay)
                 delay *= 2
                 continue

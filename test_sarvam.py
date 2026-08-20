@@ -6,7 +6,7 @@ Proves the credentials in .env work against all three services the product
 needs (saaras-v3 STT, sarvam-vision, bulbul-v3 TTS) without needing any
 pre-recorded audio or scanned document — it round-trips its own test data:
 
-  1. bulbul-v3 speaks a line of Marathi text -> WAV bytes.
+  1. bulbul-v3 speaks a line of Hindi text -> WAV bytes.
   2. saaras-v3 transcribes that WAV back to text (proves STT + the audio
      bulbul-v3 produces are compatible with each other).
   3. A tiny synthetic image with printed English text is generated on the
@@ -67,11 +67,14 @@ def main():
     # ---- 1. bulbul-v3 : text -> speech -----------------------------------
     print("=" * 70)
     print("1/3  bulbul-v3 (text-to-speech)")
-    text_mr = "तुमच्या शरीरावर कुठे सूज आहे का?"  # the demo's swelling question
+    # UNVERIFIED translation of the demo's swelling question — not checked
+    # by a native speaker, same caveat generate_mock_demo.py's Hindi lines
+    # carry. Good enough to smoke-test the round trip, not to ship.
+    text_hi = "क्या आपके शरीर में कहीं सूजन है?"
     try:
         tts_resp = client.text_to_speech.convert(
-            text=text_mr,
-            language_code="mr-IN",
+            text=text_hi,
+            language_code="hi-IN",
             speaker="shubh",
             model="bulbul:v3",
         )
@@ -94,11 +97,11 @@ def main():
             stt_resp = client.speech_to_text.transcribe(
                 file=f,
                 model="saaras:v3",
-                language_code="mr-IN",
+                language_code="hi-IN",
             )
         transcript = getattr(stt_resp, "transcript", None) or stt_resp["transcript"]
         print(f" saaras-v3 responded: \"{transcript}\"")
-        print(f"   (sent: \"{text_mr}\")")
+        print(f"   (sent: \"{text_hi}\")")
     except Exception as e:
         fail("saaras-v3 speech-to-text", e)
 
@@ -146,7 +149,7 @@ def main():
     print("\n" + "=" * 70)
     print("ALL THREE SERVICES RESPONDED. Credentials are good.")
     print("Next: day-plan.md step 2 (wire web/index.html) and step 3")
-    print("(record the real Marathi audio + photograph a real blister strip).")
+    print("(record the real Hindi audio + photograph a real blister strip).")
 
 if __name__ == "__main__":
     main()

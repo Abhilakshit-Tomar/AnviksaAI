@@ -9,20 +9,21 @@ their own voice, and the backup video should sound like that same person.
 This is for wiring the pipeline now; do the real recording per
 day-plan.md step 3 before rehearsing.
 
-Language: the demo's target language is Marathi (mr-IN) — that's what
-CLAUDE.md, deck-guide.md and the frontend's transcript are built around.
-Defaulting to Hindi (hi-IN) here is a deliberate, temporary choice for
-today only, because nobody on the team can currently verify Marathi
-output by ear. The Hindi lines below are MY translation, not checked by a
-native speaker — same caveat day-plan.md already puts on the Marathi
-lines ("Get the Marathi checked by a native speaker before you rehearse").
+Language: the demo's target language was originally Marathi (mr-IN), but
+the project switched to Hindi (hi-IN) as the settled demo language partway
+through the build — see git log. hi-IN is now the default and what
+capture.py/CLAUDE.md's live demo path actually uses. The mr-IN entry below
+is kept as an alternate option, not deleted, but it is NOT the current
+target and hasn't been touched since the switch. The Hindi lines below are
+MY translation, not checked by a native speaker — same caveat day-plan.md
+originally put on the Marathi lines ("Get the Marathi checked by a native
+speaker before you rehearse"), now applying to Hindi instead.
 Treat both as unverified until a native speaker of the relevant language
-confirms them; don't let this become the pitch language without that
-check just because it was the default during testing.
+confirms them.
 
 Usage:
-    python generate_mock_demo.py                # hi-IN, today's default
-    python generate_mock_demo.py --lang mr-IN    # the real target language
+    python generate_mock_demo.py                # hi-IN, tonight's demo language
+    python generate_mock_demo.py --lang mr-IN    # unused alternate, kept but not current
 
 Writes into demo/mock_<lang>/:
     mock_line_00_patient.wav ... mock_line_04_patient.wav   one file per
@@ -77,8 +78,8 @@ SPEAKER_VOICE = {"patient": "priya", "doctor": "shubh"}  # any two distinct
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lang", default="hi-IN", choices=sorted(LINES_BY_LANG),
-                    help="BCP-47 code — hi-IN for today's testing (default), "
-                         "mr-IN for the real target language")
+                    help="BCP-47 code — hi-IN, tonight's demo language "
+                         "(default); mr-IN is an unused alternate")
     args = ap.parse_args()
 
     out_dir = Path("demo") / f"mock_{args.lang}"
