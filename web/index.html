@@ -226,7 +226,10 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
       </div>
       <div class="card" style="flex:0 0 auto">
         <div class="h"><h2>Doctor's note</h2></div>
-        <div class="note" id="dnote" style="font-size:12.5px">—</div>
+        <textarea id="dnote-input" class="note" rows="3" title="Ctrl/Cmd+Enter to commit" placeholder="Type your impression here, then commit it…" style="font-size:12.5px;width:100%;resize:vertical;min-height:56px"></textarea>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px">
+          <button type="button" class="primary" id="dnote-commit" disabled>Commit impression</button>
+        </div>
       </div>
       <div class="card" style="flex:0 0 auto">
         <div class="h"><h2>Live recording <span style="font-weight:400;text-transform:none;letter-spacing:0">(test input)</span></h2><span class="tag" id="live-status">idle</span></div>
@@ -598,7 +601,56 @@ function svc(id,on){$(id).classList.toggle('on',on)}
 
 const LOCKED=`<div class="empty locked">${ICON_LOCK}Held back until the clinician records their own impression.<br><span>Showing a differential first would anchor the reader — the failure mode this tool exists to prevent.</span></div>`;
 
-const LABELS=['Start consultation','Continue','Scan patient records','Record impression','Reveal analysis','Compute best question','Ask it aloud','Update posterior','Order ECG + troponin + d-dimer','Draft for record','Replay'];
+const LABELS=['Start consultation','Continue','Scan patient records','Record impression','Type + commit your impression','Compute best question','Ask it aloud','Update posterior','Order ECG + troponin + d-dimer','Draft for record','Replay'];
+
+// ===================================================================
+// The commit gate. Differential and Can't-Miss are computed from the
+// live STAGES data as the scripted steps progress (see step 5/8/9
+// below), but that data is only ever PAINTED into #dx/#cm once the
+// clinician has typed their own note and pressed commit — this is the
+// real trigger CLAUDE.md calls for, replacing the old step===1/4
+// scripted auto-reveal. dxState/cmState hold "what would be shown" so
+// that pressing commit mid-stage (or STAGES advancing while still
+// uncommitted) paints the right content the moment it fires, without
+// needing the step machinery to know anything about commit state.
+// Highest-Value Question is untouched by any of this — CLAUDE.md only
+// flags the differential/Can't-Miss as the anchoring risk.
+// ===================================================================
+let committed=false;
+let dxState=null, cmState=null;
+
+function lockPanels(){
+  $('cm').innerHTML=LOCKED;
+  $('dx').innerHTML=LOCKED;
+  $('dxtag').textContent='';
+}
+function paintDX(){
+  if(!committed || !dxState) return;
+  paintBars($('dx'), bars(toBars(STAGES[dxState.idx]), dxState.prevIdx!=null?toBars(STAGES[dxState.prevIdx]):undefined));
+  $('dxtag').textContent='naive bayes · DDXPlus';
+}
+function paintCM(){
+  if(!committed || !cmState) return;
+  $('cm').innerHTML=cmHtml(toCM(STAGES[cmState.idx]),true);
+  if(cmState.tag) $('cmtag').textContent=cmState.tag;
+}
+function commitImpression(){
+  const text=$('dnote-input').value.trim();
+  if(!text || committed) return;
+  committed=true;
+  $('dnote-input').disabled=true;
+  $('dnote-commit').disabled=true;
+  $('dnote-commit').textContent='Committed';
+  paintDX();
+  paintCM();
+}
+$('dnote-commit').onclick=commitImpression;
+$('dnote-input').addEventListener('input',()=>{
+  $('dnote-commit').disabled = committed || !$('dnote-input').value.trim();
+});
+$('dnote-input').addEventListener('keydown', e=>{
+  if(e.key==='Enter' && (e.ctrlKey||e.metaKey)){ e.preventDefault(); commitImpression(); }
+});
 
 function render(){
   $('stepn').textContent=String(step).padStart(2,'0')+' / '+STEPS;
@@ -609,7 +661,7 @@ function render(){
   if(step>=3){svc('s-vis',1);}
   if(step>=6){svc('s-tts',1);}
 
-  if(step===1){$('tx').innerHTML='';UTT.slice(0,2).forEach(utt);$('cm').innerHTML=LOCKED;$('dnote').innerHTML='<span style="color:var(--muted)">awaiting clinician impression…</span>';}
+  if(step===1){$('tx').innerHTML='';UTT.slice(0,2).forEach(utt);lockPanels();}
   if(step===2){UTT.slice(2).forEach(utt);}
   if(step===3){
     $('docn').textContent='1 scanned';
@@ -620,10 +672,9 @@ function render(){
       <span class="chip new"><span class="k">E_100</span> currently taking hormones</span>
     </div></div>`;
   }
-  if(step===4){$('dnote').textContent='?anxiety / panic attack — reassure, propranolol 10';}
   if(step===5){
-    paintBars($('dx'),bars(toBars(STAGES[0])));$('dxtag').textContent='naive bayes · DDXPlus';
-    $('cm').innerHTML=cmHtml(toCM(STAGES[0]),true);
+    dxState={idx:0};cmState={idx:0};
+    paintDX();paintCM();
     $('mis').innerHTML=toMIS(STAGES[0]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
   }
   if(step===6){
@@ -633,16 +684,16 @@ function render(){
   if(step===7){utt({...Q_ASK,audioB64:STAGES[0].question_audio_b64});}
   if(step===8){
     utt(Q_ANS);stopQuestionAudio();
-    paintBars($('dx'),bars(toBars(STAGES[1]),toBars(STAGES[0])));
-    $('cm').innerHTML=cmHtml(toCM(STAGES[1]),true);
+    dxState={idx:1,prevIdx:0};cmState={idx:1};
+    paintDX();paintCM();
     $('mis').innerHTML=toMIS(STAGES[1]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
     $('qbody').innerHTML='<div class="empty">Answered. No remaining question changes management.</div>';
     $('igtag').textContent='';
   }
   if(step===9){
     // the panel must be able to FINISH. this is the alert-fatigue answer.
-    $('cm').innerHTML=cmHtml(toCM(STAGES[2]),true);
-    $('cmtag').textContent='ECG · troponin · d-dimer done';
+    cmState={idx:2,tag:'ECG · troponin · d-dimer done'};
+    paintCM();
     // Also caught while fixing the block above: this line was still
     // Marathi ("आणि") too — missed by the earlier sweep since it's inline
     // here, not near the UTT/Q_ASK/Q_ANS declarations. Hand-written Hindi,
@@ -675,9 +726,12 @@ function go(d){
 function reset(){
   stopQuestionAudio();
   step=0;
+  committed=false;dxState=null;cmState=null;
+  $('dnote-input').value='';$('dnote-input').disabled=false;
+  $('dnote-commit').disabled=true;$('dnote-commit').textContent='Commit impression';
   $('tx').innerHTML='<div class="empty">Waiting for consultation to begin.</div>';
   $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
-  $('docn').textContent='0 scanned';$('dnote').textContent='—';$('mode').textContent='idle';
+  $('docn').textContent='0 scanned';$('mode').textContent='idle';
   $('cm').innerHTML='<div class="empty">Insufficient evidence to rank.</div>';
   $('qbody').innerHTML='<div class="empty">Posterior too flat to discriminate.</div>';
   $('igtag').textContent='';$('cmtag').textContent='ranked by P × harm-if-missed';
@@ -689,8 +743,15 @@ function reset(){
 $('next').onclick=()=>go(1);
 $('back').onclick=()=>go(-1);
 document.addEventListener('keydown',e=>{
-  if(e.key===' '||e.key==='ArrowRight'){e.preventDefault();go(1)}
+  const tag=(e.target&&e.target.tagName)||'';
+  const inField=tag==='TEXTAREA'||tag==='INPUT'||tag==='SELECT';
+  // Arrow keys always drive slide navigation, even while a text field
+  // happens to have focus — only space/R are guarded, since those are
+  // ordinary characters someone typing a note needs to type.
+  if(e.key==='ArrowRight'){e.preventDefault();if(step<STEPS)go(1)}
   else if(e.key==='ArrowLeft'){e.preventDefault();go(-1)}
+  else if(inField)return;
+  else if(e.key===' '){e.preventDefault();go(1)}
   else if(e.key==='r'||e.key==='R'){reset()}
 });
 
