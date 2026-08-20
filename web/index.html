@@ -140,14 +140,45 @@ button.primary.playing{animation:btnpulse 1s ease-in-out infinite}
 kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:1px solid var(--hair);border-radius:4px;padding:1px 5px;color:var(--ink-2)}
 .hide{display:none}
 @media(max-width:1180px){.cols{grid-template-columns:1fr}.app{height:auto}.card.scroll,.card{max-height:none!important}}
+
+/* ---------- pre-consultation setup ---------- */
+.setup{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:var(--plane)}
+.setup.hide{display:none}
+.setupcard{width:380px;max-width:92vw;background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:26px 24px;display:flex;flex-direction:column;gap:13px}
+.setuptitle{font-weight:600;font-size:16px;margin-bottom:2px}
+.setuptitle span{color:var(--muted);font-weight:400}
+.setupsub{font-size:12px;color:var(--muted);margin-bottom:6px;line-height:1.5}
+.setupcard label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;letter-spacing:.03em;color:var(--ink-2)}
+.setupcard input,.setupcard select{font-family:inherit;font-size:13.5px;background:var(--surface-2);border:1px solid var(--hair);border-radius:7px;padding:8px 10px;color:var(--ink)}
+.setupcard input:focus,.setupcard select:focus{outline:none;border-color:var(--blue)}
+.setuprow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.setupcard button{margin-top:4px;padding:9px 14px}
 </style>
 </head>
 <body>
-<div class="app">
+<div class="setup" id="setupScreen">
+  <form class="setupcard" id="setupForm">
+    <div class="setuptitle">AnviksaAI <span>/ pre-consultation setup</span></div>
+    <div class="setupsub">Set patient details and the consult language before recording begins. These drive the header above and the language used for transcription and spoken output.</div>
+    <label>Patient name<input type="text" id="f-name" required></label>
+    <div class="setuprow">
+      <label>Age<input type="number" id="f-age" min="0" max="120" required></label>
+      <label>Gender<select id="f-gender">
+        <option value="F">Female</option>
+        <option value="M">Male</option>
+        <option value="O">Other</option>
+      </select></label>
+    </div>
+    <label>Case ID<input type="text" id="f-caseid" placeholder="e.g. OPD 2:14" required></label>
+    <label>Language<select id="f-lang"></select></label>
+    <button class="primary" type="submit">Start consultation</button>
+  </form>
+</div>
+<div class="app hide" id="app">
 
   <div class="bar">
     <div class="brand">AnviksaAI <span>/ demo prototype</span></div>
-    <div class="patient">F, <b>34</b> · OPD 2:14 · <b>हिंदी</b></div>
+    <div class="patient" id="patientbar">—</div>
     <div class="spacer"></div>
     <div class="svc">
       <span id="s-stt"><i></i>saaras-v3</span>
@@ -240,7 +271,33 @@ const ICON_PLAY='<svg viewBox="0 0 16 16" fill="currentColor" style="width:9px;h
 let STAGES = null;      // [stage "2 + pill strip + travel", stage "3 + calf", stage "4 + tests"]
 let LOAD_ERROR = null;
 
-async function loadContract(){
+// bulbul-v3's full TTS voice set — 11 languages, a SUBSET of saaras-v3 STT's
+// 23. Deliberately not the wider STT list: any language without a bulbul-v3
+// voice could never speak best_question aloud at the "ask this aloud" step,
+// so offering it in this dropdown would just be a language that silently
+// can't do half of what the demo does. `native` is used in the header bar;
+// `label` is the dropdown's own display text.
+const LANGUAGES=[
+  {code:'hi-IN',label:'Hindi',native:'हिंदी'},
+  {code:'bn-IN',label:'Bengali',native:'বাংলা'},
+  {code:'ta-IN',label:'Tamil',native:'தமிழ்'},
+  {code:'te-IN',label:'Telugu',native:'తెలుగు'},
+  {code:'gu-IN',label:'Gujarati',native:'ગુજરાતી'},
+  {code:'kn-IN',label:'Kannada',native:'ಕನ್ನಡ'},
+  {code:'ml-IN',label:'Malayalam',native:'മലയാളം'},
+  {code:'mr-IN',label:'Marathi',native:'मराठी'},
+  {code:'pa-IN',label:'Punjabi',native:'ਪੰਜਾਬੀ'},
+  {code:'od-IN',label:'Odia',native:'ଓଡ଼ିଆ'},
+  {code:'en-IN',label:'English',native:'English'},
+];
+
+// Filled in by the pre-consultation setup form (see setupForm's submit
+// handler near the bottom) before loadContract() ever runs — the selected
+// language has to be known before the first /assess call goes out, since
+// it's part of that call's body.
+let SETUP = null; // {name, age, gender, caseId, languageCode}
+
+async function loadContract(languageCode){
   const AUDIO_DIR = 'demo/mock_hi-IN/';
   const LINES = ['mock_line_00_patient.wav', 'mock_line_01_patient.wav',
                   'mock_line_02_doctor.wav', 'mock_line_03_patient.wav',
@@ -250,25 +307,41 @@ async function loadContract(){
   // These audio_paths/image_path are resolved server-side by main.py
   // (Path(p).exists()), not fetched by the browser — they must be valid
   // relative to the directory main.py itself is run from (the repo root).
+  //
+  // NOTE: the actual recorded audio under demo/mock_hi-IN/ is spoken Hindi
+  // regardless of which language is selected here — there's no re-recorded
+  // set per language. Selecting a non-Hindi language still sends that same
+  // Hindi audio to saaras-v3 with a different language_code hint, which
+  // main.py doesn't crash on, but the transcript it gets back for anything
+  // but hi-IN is not expected to be accurate — only the Hindi path is
+  // actually rehearsed/verified end-to-end.
   const CALLS = [
-    {audio_paths: LINES.slice(0, 4).map(path), image_path: IMAGE, actions_taken: []},
-    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: []},
-    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: ['ecg', 'troponin', 'd_dimer']},
+    {audio_paths: LINES.slice(0, 4).map(path), image_path: IMAGE, actions_taken: [], language_code: languageCode},
+    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: [], language_code: languageCode},
+    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: ['ecg', 'troponin', 'd_dimer'], language_code: languageCode},
   ];
-  try{
-    const stages = [];
-    for(const body of CALLS){
-      const res = await fetch('/assess', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body),
-      });
-      if(!res.ok){
-        const err = await res.json().catch(()=>({detail: 'HTTP '+res.status}));
-        throw new Error(err.detail || ('HTTP '+res.status));
-      }
-      stages.push(await res.json());
+  const callOne = async body => {
+    const res = await fetch('/assess', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if(!res.ok){
+      const err = await res.json().catch(()=>({detail: 'HTTP '+res.status}));
+      throw new Error(err.detail || ('HTTP '+res.status));
     }
+    return res.json();
+  };
+  try{
+    // Sequential, deliberately NOT Promise.all — measured both ways live.
+    // Firing all three at once made the *total* wait longer (8.9s sequential
+    // vs 12-24s parallel across two runs), not shorter: the three calls share
+    // overlapping audio files and the same blister-strip image, so going
+    // concurrent triples up simultaneous hits on Sarvam's STT/vision (vision
+    // alone is capped at 10-30 req/min per CLAUDE.md) and each call slows
+    // down under that contention more than the client saves by not queueing.
+    const stages = [];
+    for(const body of CALLS) stages.push(await callOne(body));
     STAGES = stages;
   }catch(e){
     LOAD_ERROR = e.message;
@@ -329,6 +402,18 @@ function branchNote(p, diffTop){
   if(p<0.05) return 'drops off list';
   return '';
 }
+// Reflects what main.py actually spoke (question_audio_language /
+// question_audio_fallback on the stage payload), not the language the
+// professional picked — those can differ, since only hi-IN has a real
+// translation and everything else falls back to English audio. See
+// main.py's /assess docstring for the fallback rule this mirrors.
+function ttsLabel(stage){
+  const lang=stage.question_audio_language;
+  if(!lang) return 'bulbul-v3';
+  if(stage.question_audio_fallback) return 'bulbul-v3 · English (fallback — no translation for this language yet)';
+  const l=LANGUAGES.find(x=>x.code===lang);
+  return 'bulbul-v3 · '+(l?l.native:lang);
+}
 function toQBODY(stage){
   const q=pickQuestion(stage);
   if(!q) return null;
@@ -338,7 +423,12 @@ function toQBODY(stage){
   // a non-empty differential the way the old hand-picked contract.json
   // stages always had.
   const diffTop=stage.differential.length?stage.differential[0].p:undefined;
-  const orig=HINDI_Q[q.id];
+  // Gated on the SELECTED language, not just presence in HINDI_Q — that
+  // dict only ever holds Hindi text, so showing it as if it were the
+  // spoken caption for a different selected language (which actually gets
+  // the English fallback audio, see ttsLabel) would misrepresent what's
+  // playing.
+  const orig=(SETUP.languageCode==='hi-IN')?HINDI_Q[q.id]:null;
   const runners=(stage.runners_up||[]).filter(r=>r.id!==q.id).slice(0,3);
   const yn=(p)=>{const note=branchNote(p,diffTop);return (p*100).toFixed(1)+'%'+(note?` · ${note}`:'');};
   return {
@@ -352,7 +442,7 @@ function toQBODY(stage){
     </div>
     <div class="ask">
       <button class="primary" id="askbtn">Ask this aloud</button>
-      <span class="speak" id="spk"><span class="wave"><i></i><i></i><i></i><i></i></span>bulbul-v3 · हिंदी</span>
+      <span class="speak" id="spk"><span class="wave"><i></i><i></i><i></i><i></i></span>${ttsLabel(stage)}</span>
     </div>
     <div class="alts">
       ${runners.map(r=>`<div class="alt"><span class="ig">${r.ig.toFixed(3)} bit</span><span>${r.en}</span></div>`).join('')}
@@ -559,10 +649,15 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='r'||e.key==='R'){reset()}
 });
 
-(async function boot(){
+function paintPatientBar(){
+  const lang=LANGUAGES.find(l=>l.code===SETUP.languageCode)||LANGUAGES[0];
+  $('patientbar').innerHTML=`<b>${SETUP.name}</b> · ${SETUP.gender}, <b>${SETUP.age}</b> · Case ID <b>${SETUP.caseId}</b> · <b>${lang.native}</b>`;
+}
+
+async function boot(){
   $('next').disabled=true;
   $('next').textContent='Running live assessment…';
-  await loadContract();
+  await loadContract(SETUP.languageCode);
   if(LOAD_ERROR){
     $('next').textContent='Live /assess call failed';
     $('tx').innerHTML=`<div class="empty">Could not load live assessment: ${LOAD_ERROR}<br>Confirm main.py is running (python main.py) and reachable at this origin, then reload.</div>`;
@@ -570,6 +665,33 @@ document.addEventListener('keydown',e=>{
   }
   $('next').disabled=false;
   reset();
+}
+
+// Pre-consultation setup: patient name/age/gender/Case ID and the consult
+// language are collected here, BEFORE the idle "Waiting for consultation to
+// begin" screen or any /assess call — the selected language has to be known
+// up front since it's sent on every /assess call from here on (see
+// loadContract's language_code). Dropdown is populated from LANGUAGES only
+// (bulbul-v3's 11 TTS voices), not a hand-typed <option> list, so it can't
+// drift out of sync with what "ask this aloud" can actually speak.
+(function initSetup(){
+  const sel=$('f-lang');
+  sel.innerHTML=LANGUAGES.map(l=>`<option value="${l.code}">${l.label}</option>`).join('');
+  sel.value='hi-IN';
+  $('setupForm').addEventListener('submit', e=>{
+    e.preventDefault();
+    SETUP={
+      name: $('f-name').value.trim(),
+      age: $('f-age').value.trim(),
+      gender: $('f-gender').value,
+      caseId: $('f-caseid').value.trim(),
+      languageCode: $('f-lang').value,
+    };
+    paintPatientBar();
+    $('setupScreen').classList.add('hide');
+    $('app').classList.remove('hide');
+    boot();
+  });
 })();
 </script>
 </body>

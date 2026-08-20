@@ -3,16 +3,23 @@ main.py — the wire. FastAPI server tying capture -> extract -> engine
 together, per day-plan.md step 6.
 
     POST /assess
-        body: {"audio_paths": [str, ...], "image_path": str|null, "actions_taken": [str]}
+        body: {"audio_paths": [str, ...], "image_path": str|null,
+               "actions_taken": [str], "language_code": str}
         -> the contract.json shape (differential, cant_miss, best_question,
            runners_up, misfits, ...) PLUS "transcript" and "_evidence", so
            the caller can see what capture.py heard and what extract.py
            derived from it, not just the final numbers. Also, best-effort,
-           "question_audio_b64" (base64 WAV, bulbul-v3, hi-IN) and
-           "question_audio_for_id" when the computed question is one this
-           demo has a hand-written Hindi translation for — see
-           HINDI_QUESTIONS below. Both fields are simply absent otherwise;
-           TTS failure never fails the whole call.
+           "question_audio_b64" (base64 WAV, bulbul-v3) plus
+           "question_audio_for_id" and "question_audio_language". If
+           language_code is "hi-IN" AND the computed question has a
+           hand-written Hindi entry in HINDI_QUESTIONS below, that Hindi
+           text is spoken. Otherwise — any other language, or Hindi with no
+           matching entry — this FALLS BACK to speaking the raw English
+           question_en in en-IN ("question_audio_fallback": true), rather
+           than staying silent or erroring. All these fields are simply
+           absent if TTS itself fails; TTS failure never fails the whole
+           call. language_code also selects the STT language passed to
+           capture.transcribe() for every audio_path; defaults to "hi-IN".
 
         audio_paths is a LIST because the demo's consultation is recorded as
         several short single-utterance files (demo/mock_hi-IN/mock_line_*.wav)
@@ -120,6 +127,11 @@ class AssessRequest(BaseModel):
     audio_paths: list[str]
     image_path: str | None = None
     actions_taken: list[str] = []
+    # BCP-47 code, restricted client-side to bulbul-v3's 11 TTS-supported
+    # languages (see web/index.html's LANGUAGES) even though saaras-v3 STT
+    # itself understands more — a language with no TTS voice couldn't ever
+    # speak best_question aloud, so there's no point offering it here.
+    language_code: str = "hi-IN"
 
 
 @app.post("/assess")
@@ -144,7 +156,7 @@ def assess(req: AssessRequest):
         if not audio_path.exists():
             raise HTTPException(400, f"audio_path not found: {audio_path}")
         try:
-            stt_result = capture.transcribe(str(audio_path))
+            stt_result = capture.transcribe(str(audio_path), language_code=req.language_code)
         except Exception as e:
             raise HTTPException(502, f"transcription failed for {audio_path.name}: {e}")
         transcript_parts.append(stt_result["transcript"])
@@ -175,7 +187,8 @@ def assess(req: AssessRequest):
     # failure (rate limit, network) shouldn't take down an otherwise-good
     # assessment, so this is deliberately non-fatal — omit the field rather
     # than 502 the whole call.
-    qid, qtext_hi = _pick_hindi_question(payload)
+    qid, qtext_hi = (_pick_hindi_question(payload)
+                     if req.language_code == "hi-IN" else (None, None))
     if qtext_hi:
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -183,9 +196,32 @@ def assess(req: AssessRequest):
             capture.speak(qtext_hi, tmp_path, language_code="hi-IN")
             payload["question_audio_b64"] = base64.b64encode(tmp_path.read_bytes()).decode("ascii")
             payload["question_audio_for_id"] = qid
+            payload["question_audio_language"] = "hi-IN"
             tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
+    else:
+        # KNOWN LIMITATION: HINDI_QUESTIONS above is the only hand-written
+        # translation that exists tonight. Every other selected language —
+        # and Hindi itself, if the computed question has no Hindi entry —
+        # falls back to speaking the raw English question_en text in en-IN,
+        # so "ask this aloud" always produces SOME audio instead of silently
+        # doing nothing or throwing. It is NOT a translation into the
+        # patient's actual language; only the hi-IN path above is real for
+        # this demo. A real deploy needs real per-language translations here.
+        q = payload.get("best_question")
+        if q and q.get("en"):
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                capture.speak(q["en"], tmp_path, language_code="en-IN")
+                payload["question_audio_b64"] = base64.b64encode(tmp_path.read_bytes()).decode("ascii")
+                payload["question_audio_for_id"] = q["id"]
+                payload["question_audio_language"] = "en-IN"
+                payload["question_audio_fallback"] = True
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     return payload
 
