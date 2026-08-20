@@ -1,0 +1,25 @@
+# --- secrets. NEVER commit these. -------------------------------------
+# A key pushed to a public repo is scraped by bots within hours. If one
+# ever does get committed, rotating the key in the Sarvam dashboard is the
+# only real fix — deleting the commit is not enough, it stays in history.
+.env
+.env.*
+!.env.example
+*.key
+secrets.json
+
+# --- Raw DDXPlus release — 808 MB unpacked. ---------------------------
+# Re-download from Figshare (see README). counts.npz IS committed;
+# the demo machine must never rebuild from the raw CSVs.
+ddxplus/
+release_train_patients.zip
+release_validate_patients.zip
+release_test_patients.zip
+
+# --- generated ---------------------------------------------------------
+cache/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

@@ -1,0 +1,107 @@
+# harm_if_missed — the clinical judgment this product encodes.
+#
+# ORDERS OF MAGNITUDE, NOT A LINEAR 1-5. Missing an MI is ~100x worse than
+# missing a sore throat, not 5x. A linear scale breaks the whole product:
+# a 44% panic attack at severity 1 outranks a 9.6% PE at severity 5, and
+# the Can't-Miss panel silently starts agreeing with the doctor.
+#
+# tiers:
+#   100  lethal within hours if missed
+#    30  organ- or life-threatening over days; major morbidity
+#    10  significant morbidity; needs definite treatment
+#     3  needs treatment, not urgent
+#     1  self-limiting
+#
+# derive the tier from time-to-irreversible-harm and be ready to say so.
+# GET A CLINICIAN TO REVIEW THIS FILE. It is 49 lines and it is the single
+# most attackable artifact in the project.
+
+default: 3
+
+pathologies:
+  # --- 100: lethal within hours -------------------------------------------
+  Anaphylaxis: 100
+  "Acute pulmonary edema": 100
+  "Possible NSTEMI / STEMI": 100
+  "Unstable angina": 100
+  "Pulmonary embolism": 100
+  Epiglottitis: 100
+  Ebola: 100
+  Boerhaave: 100
+
+  # --- 30: organ/life-threatening over days -------------------------------
+  "Spontaneous pneumothorax": 30
+  Myocarditis: 30
+  Pericarditis: 30
+  "Guillain-Barré syndrome": 30
+  "Atrial fibrillation": 30
+  PSVT: 30
+  "Pancreatic neoplasm": 30
+  "Pulmonary neoplasm": 30
+  Tuberculosis: 30
+  Croup: 30
+  "Acute COPD exacerbation / infection": 30
+  Pneumonia: 30
+  "Myasthenia gravis": 30
+  Chagas: 30
+  "HIV (initial infection)": 30
+  Larygospasm: 30
+  "Bronchospasm / acute asthma exacerbation": 30
+  "Stable angina": 30
+
+  # --- 10: significant morbidity ------------------------------------------
+  SLE: 10
+  Sarcoidosis: 10
+  Anemia: 10
+  Bronchiectasis: 10
+  "Acute dystonic reactions": 10
+  "Inguinal hernia": 10
+  "Whooping cough": 10
+  Bronchiolitis: 10
+  Bronchitis: 10
+  "Scombroid food poisoning": 10
+  "Spontaneous rib fracture": 10
+
+  # --- 3: needs treatment, not urgent -------------------------------------
+  Influenza: 3
+  "Cluster headache": 3
+  "Acute otitis media": 3
+  "Chronic rhinosinusitis": 3
+  "Acute rhinosinusitis": 3
+  "Localized edema": 3
+
+  # --- 1: self-limiting ---------------------------------------------------
+  GERD: 1
+  "Panic attack": 1
+  URTI: 1
+  "Viral pharyngitis": 1
+  "Acute laryngitis": 1
+  "Allergic sinusitis": 1
+
+# What action takes a condition OFF the Can't-Miss panel.
+#
+# This is the fix for alert fatigue, and it is the difference between a
+# safety net and a smoke alarm that goes off when you make toast. Without
+# it, PE and ACS appear on every chest complaint forever and the doctor
+# stops reading the panel within a week.
+#
+# The panel answers "what haven't you ruled out", not "what could this be".
+excluded_by:
+  "Pulmonary embolism":        [d_dimer, ctpa, wells_documented]
+  "Possible NSTEMI / STEMI":   [ecg, troponin]
+  "Unstable angina":           [ecg, troponin]
+  "Acute pulmonary edema":     [cxr, bnp]
+  "Spontaneous pneumothorax":  [cxr, auscultation_documented]
+  Myocarditis:                 [ecg, troponin, echo]
+  Pericarditis:                [ecg, echo]
+  Pneumonia:                   [cxr, auscultation_documented]
+  Tuberculosis:                [cxr, sputum_afb, cbnaat]
+  "Pulmonary neoplasm":        [cxr, ct_chest]
+  "Pancreatic neoplasm":       [ct_abdomen, usg_abdomen]
+  Anemia:                      [cbc, hb]
+  "Atrial fibrillation":       [ecg]
+  PSVT:                        [ecg]
+  "Stable angina":             [ecg, tmt]
+  Epiglottitis:                [laryngoscopy, neck_xray]
+  Anaphylaxis:                 [observed_response_to_adrenaline]
+  Boerhaave:                   [cxr, ct_chest]
