@@ -35,10 +35,11 @@ together, per day-plan.md step 6.
         ...) PLUS "transcript" and "_evidence", so the caller can see what
         capture.py heard and what extract.py derived from it, not just the
         final numbers. Also "scanned_documents" — a list of
-        {"name": filename, "chars": N} for every document OCR'd this call
-        (empty list if none), so the frontend's "Patient-supplied records"
-        panel can show a real count/list instead of the scripted demo's
-        hardcoded chips. Also, best-effort, "transcript_en" — an English
+        {"name": filename, "chars": N, "text": full OCR text} for every
+        document OCR'd this call (empty list if none), so the frontend's
+        "Patient-supplied records" panel can show a real count/list — and,
+        per document, the actual extracted text on click — instead of the
+        scripted demo's hardcoded chips. Also, best-effort, "transcript_en" — an English
         translation (Sarvam text.translate) of "transcript", present
         whenever language_code isn't already "en-IN" and translation
         succeeds; a translation failure just omits the field, same
@@ -218,7 +219,7 @@ def _run_assessment(audio_paths, documents, actions_taken, language_code):
         except Exception as e:
             raise HTTPException(502, f"document scan failed for {doc['name']}: {e}")
         doc_chunks.append(text)
-        scanned_documents.append({"name": doc["name"], "chars": len(text)})
+        scanned_documents.append({"name": doc["name"], "chars": len(text), "text": text})
     doc_text = "\n\n".join(doc_chunks)
 
     try:

@@ -76,6 +76,10 @@ button.primary.playing{animation:btnpulse 1s ease-in-out infinite}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:5px;font-size:12px;background:rgba(57,135,229,.13);border:1px solid rgba(57,135,229,.35);color:var(--ink);margin:0 5px 5px 0}
 .chip.new{border-color:rgba(250,178,25,.5);background:rgba(250,178,25,.11)}
 .chip .k{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.thumb.clickable{cursor:pointer}
+.thumb.clickable:hover{border-color:rgba(57,135,229,.6)}
+.thumb.clickable.active{border-color:#3987e5}
+.doctext{margin-top:8px;font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--hair);border-radius:6px;padding:9px 10px;white-space:pre-wrap;word-break:break-word}
 
 /* ---------- differential ---------- */
 .row{margin-bottom:11px}
@@ -844,10 +848,22 @@ function renderScannedDocs(list){
   list.forEach(d=>{
     const el=document.createElement('div');
     el.className='doc';
-    el.innerHTML=`<div class="thumb"></div><div class="docmeta">
+    el.innerHTML=`<div class="thumb clickable" title="Click to view extracted text"></div><div class="docmeta">
       <div class="t">${escHtml(d.name)}</div>
       <span class="chip"><span class="k">OCR</span> ${d.chars} chars extracted</span>
+      <div class="doctext hide"></div>
     </div>`;
+    // Full OCR text set via textContent, not innerHTML — same network-sourced-text
+    // rule escHtml() exists for elsewhere in this file, just via the DOM API instead
+    // since this is a plain text box, not a template string.
+    el.querySelector('.doctext').textContent = d.text || '(no text extracted)';
+    const thumb = el.querySelector('.thumb');
+    thumb.onclick = () => {
+      const box = el.querySelector('.doctext');
+      const opening = box.classList.contains('hide');
+      box.classList.toggle('hide');
+      thumb.classList.toggle('active', opening);
+    };
     $('docs').appendChild(el);
   });
   $('docn').textContent=$('docs').querySelectorAll('.doc').length+' scanned';
