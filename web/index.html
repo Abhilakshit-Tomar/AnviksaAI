@@ -767,6 +767,11 @@ async function liveToggleRecord(){
   $('live-status').textContent='recording…';
 }
 
+// Escapes text before it's handed to utt(), which sets innerHTML directly
+// (fine for the hand-authored UTT/Q_ASK/Q_ANS constants elsewhere in this
+// file, NOT fine for STT output coming back over the network).
+const escHtml=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
 async function liveSend(){
   if(!liveBlob) return;
   const btn=$('live-send');
@@ -783,18 +788,21 @@ async function liveSend(){
     const res=await fetch('/assess', {method:'POST', body: fd});
     const data=await res.json().catch(()=>({}));
     if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
-    const t=data.transcript ? data.transcript.replace(/</g,'&lt;') : '(empty transcript)';
-    let html=`<b>Transcript:</b> ${t}`;
-    // transcript_en (main.py, capture.translate) is only present when the
-    // selected language isn't already English and translation succeeded —
-    // omitted entirely on en-IN or on a translation failure, so this row
-    // just doesn't render rather than showing a stale/duplicate line.
-    if(data.transcript_en){
-      html+=`<div style="margin-top:5px;color:var(--muted);font-style:italic">`
-          +`<b style="color:var(--ink-2);font-style:normal">English:</b> `
-          +`${data.transcript_en.replace(/</g,'&lt;')}</div>`;
-    }
-    $('live-result').innerHTML=html;
+    // Same visual format as the scripted UTT/Q_ASK/Q_ANS lines above (utt()
+    // -> .who/.orig/.en, appended into #tx) rather than a bespoke box, per
+    // the ask to make the live transcript look like it belongs in the same
+    // Consultation panel. There's no diarization on this single uploaded
+    // clip (capture.transcribe() is called on ONE file here, not per-
+    // speaker-turn like the scripted mock_hi-IN/*.wav files are), so this
+    // is deliberately ONE flat entry — "Live recording" as the who label —
+    // not faked-up alternating Doctor/Patient turns.
+    utt({
+      w: 'Live recording',
+      o: data.transcript ? escHtml(data.transcript) : '(empty transcript)',
+      e: data.transcript_en ? escHtml(data.transcript_en) : '',
+      audioSrc: URL.createObjectURL(liveBlob),
+    });
+    $('live-result').textContent='Transcribed — added to the Consultation panel above.';
   }catch(e){
     $('live-result').textContent='Live transcription failed: '+e.message;
   }finally{
