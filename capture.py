@@ -1,9 +1,10 @@
 """
-capture.py — the ears (and mouth). Turns a recorded audio file into text,
-a photographed prescription into text, and text into spoken audio.
+capture.py — the ears (and mouth). Turns a recorded audio file into a
+diarized transcript, a photographed prescription into text, and text into
+spoken audio.
 
 Three functions, matching day-plan.md step 4:
-    transcribe(path)        -> str            (saaras-v3)
+    transcribe(path)        -> dict           (saaras-v3, batch + diarized)
     read_image(path)        -> dict            (sarvam-vision / doc_ai)
     speak(text, out_path)   -> out_path         (bulbul-v3)
 
@@ -15,14 +16,18 @@ will hit, not credits. 429s are retried with exponential backoff.
 Built and verified against the ACTUAL installed sarvamai==0.1.30 client,
 not its docs — those turned out to be wrong about several method names
 (target_language_code vs language_code, wait_until_complete() not
-existing on doc_ai jobs). See test_sarvam.py's commit history for how
-that was found. If you extend this file, verify new calls the same way:
-introspect the real client/response objects before trusting a docs page.
+existing on doc_ai jobs, get_file_results() not containing the transcript
+for batch STT jobs either). See test_sarvam.py's commit history and the
+throwaway scripts that found the batch STT flow for how each was found.
+If you extend this file, verify new calls the same way: introspect the
+real client/response objects (or write a throwaway script and read the
+actual output) before trusting a docs page.
 """
 import base64
 import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -70,37 +75,65 @@ def _with_retry(fn, *args, max_retries=5, **kwargs):
 
 
 # --------------------------------------------------------------------------
-def transcribe(path, language_code="mr-IN"):
-    """Audio file -> transcript text, via saaras-v3.
+def transcribe(path, language_code="mr-IN", num_speakers=2):
+    """Audio file -> diarized transcript, via saaras-v3 BATCH speech-to-text
+    (CLAUDE.md's actual spec: "saaras-v3 batch STT (diarized)").
 
-    NOTE: this uses the simple (single-call, non-batch, non-diarized)
-    speech_to_text.transcribe — the exact call test_sarvam.py proved
-    works. CLAUDE.md's architecture table calls for *batch* STT with
-    diarization for the real multi-speaker consult recording. Before
-    wiring that in: introspect dir(client().speech_to_text) and whatever
-    a batch call returns, the same way doc_ai's real polling surface was
-    found — don't trust a docs page's method names for it, one already
-    turned out to be invented (job.wait_until_complete() doesn't exist on
-    doc_ai; the equivalent speech_to_text_job flow may have the same
-    problem). If the demo audio is short/simple enough that extract.py
-    can tell patient from doctor by grammatical person alone, diarization
-    may not be needed for the hackathon demo at all.
+    Returns a dict shaped like Sarvam's own per-file output JSON:
+        {"transcript": "full text",
+         "diarized_transcript": {"entries": [
+             {"transcript": ..., "start_time_seconds": ..., "end_time_seconds": ...,
+              "speaker_id": "0"}, ...]},
+         "language_code": ..., ...}
+    so extract.py can use entries[i]["speaker_id"] to tell patient from
+    doctor turns apart, rather than guessing from grammatical person alone.
+    This is a BREAKING return-type change from the single-string version
+    test_sarvam.py's smoke test used — that script calls the simpler
+    speech_to_text.transcribe directly and is unaffected by this change.
+
+    The real, verified call sequence (none of it guessable from docs —
+    get_file_results()/get_status() are pass/fail bookkeeping only; the
+    transcript only ever shows up in a file download_outputs() writes to
+    disk):
+        create_job(...) -> job.upload_files(file_paths=[...]) -> job.start()
+        -> job.wait_until_complete(timeout=...) -> job.download_outputs(
+        output_dir=...) WRITES "<original_filename>.json" per input file
+        into that directory -> read/parse that file for the transcript.
     """
     path = Path(path)
     audio_bytes = path.read_bytes()
-    cpath = CACHE_DIR / f"stt_{_hash(audio_bytes, language_code)}.json"
+    cpath = CACHE_DIR / f"stt_{_hash(audio_bytes, language_code, num_speakers)}.json"
     if cpath.exists():
-        return json.loads(cpath.read_text())["transcript"]
+        return json.loads(cpath.read_text(encoding="utf-8"))
 
-    with open(path, "rb") as f:
-        resp = _with_retry(
-            client().speech_to_text.transcribe,
-            file=f, model="saaras:v3", language_code=language_code,
-        )
-    transcript = getattr(resp, "transcript", None) or resp["transcript"]
-    cpath.write_text(json.dumps({"transcript": transcript}, ensure_ascii=False),
-                      encoding="utf-8")
-    return transcript
+    job = _with_retry(
+        client().speech_to_text_job.create_job,
+        model="saaras:v3", language_code=language_code,
+        with_diarization=True, num_speakers=num_speakers,
+    )
+    job.upload_files(file_paths=[str(path)])
+    job.start()
+    job.wait_until_complete(timeout=180)
+
+    if job.is_failed():
+        raise RuntimeError(f"batch STT job {job.job_id} failed for {path.name}")
+
+    with tempfile.TemporaryDirectory() as out_dir:
+        job.download_outputs(output_dir=out_dir)
+        result_path = Path(out_dir) / f"{path.name}.json"
+        if not result_path.exists():
+            # naming drifted from what was verified — fall back to
+            # whatever landed in out_dir rather than fail outright
+            candidates = list(Path(out_dir).glob("*.json"))
+            if not candidates:
+                raise RuntimeError(
+                    f"batch STT job {job.job_id} completed but wrote no "
+                    f"output file into {out_dir}")
+            result_path = candidates[0]
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+
+    cpath.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -113,7 +146,7 @@ def read_image(path, language="en-IN"):
     img_bytes = path.read_bytes()
     cpath = CACHE_DIR / f"vision_{_hash(img_bytes, language)}.json"
     if cpath.exists():
-        return json.loads(cpath.read_text())
+        return json.loads(cpath.read_text(encoding="utf-8"))
 
     mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
             "pdf": "application/pdf"}.get(path.suffix.lstrip(".").lower(),
@@ -178,6 +211,6 @@ if __name__ == "__main__":
         sys.exit(1)
     p = Path(sys.argv[1])
     if p.suffix.lower() in (".wav", ".mp3", ".m4a", ".ogg", ".flac"):
-        print(transcribe(p))
+        print(json.dumps(transcribe(p), ensure_ascii=False, indent=2))
     else:
         print(json.dumps(read_image(p), ensure_ascii=False, indent=2))
