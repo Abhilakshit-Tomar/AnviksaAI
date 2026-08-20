@@ -3,29 +3,55 @@ main.py — the wire. FastAPI server tying capture -> extract -> engine
 together, per day-plan.md step 6.
 
     POST /assess
-        body: {"audio_paths": [str, ...], "image_path": str|null,
-               "actions_taken": [str], "language_code": str}
-        -> the contract.json shape (differential, cant_miss, best_question,
-           runners_up, misfits, ...) PLUS "transcript" and "_evidence", so
-           the caller can see what capture.py heard and what extract.py
-           derived from it, not just the final numbers. Also, best-effort,
-           "question_audio_b64" (base64 WAV, bulbul-v3) plus
-           "question_audio_for_id" and "question_audio_language". If
-           language_code is "hi-IN" AND the computed question has a
-           hand-written Hindi entry in HINDI_QUESTIONS below, that Hindi
-           text is spoken. Otherwise — any other language, or Hindi with no
-           matching entry — this FALLS BACK to speaking the raw English
-           question_en in en-IN ("question_audio_fallback": true), rather
-           than staying silent or erroring. All these fields are simply
-           absent if TTS itself fails; TTS failure never fails the whole
-           call. language_code also selects the STT language passed to
-           capture.transcribe() for every audio_path; defaults to "hi-IN".
+        Accepts EITHER of two request bodies, distinguished by Content-Type
+        (this is one route, not two — see the content-type branch in
+        assess() below):
 
-        audio_paths is a LIST because the demo's consultation is recorded as
-        several short single-utterance files (demo/mock_hi-IN/mock_line_*.wav)
-        rather than one long take — each is transcribed and the results are
-        joined into one transcript for extract.py. A single-element list
-        works fine for a one-file consultation too.
+        1. application/json (the scripted demo flow, unchanged):
+           {"audio_paths": [str, ...], "image_path": str|null,
+            "actions_taken": [str], "language_code": str}
+           audio_paths are server-side file paths (resolved relative to the
+           repo root main.py runs from) — this is what web/index.html's
+           loadContract() sends, replaying demo/mock_hi-IN/*.wav.
+
+        2. multipart/form-data (live recording, additional path):
+           a file field "audio" (any audio format the browser's
+           MediaRecorder produced — typically audio/webm) plus optional
+           form fields "language_code", "image_path", "actions_taken"
+           (JSON-encoded list, e.g. '["ecg"]'). The upload is written to a
+           temp file and that path is handed to capture.transcribe() the
+           exact same way a demo/mock_hi-IN path would be — capture.py
+           itself needed no changes. The temp file is deleted after the
+           request finishes, success or failure.
+
+        Both branches converge on the same response shape: the contract.json
+        shape (differential, cant_miss, best_question, runners_up, misfits,
+        ...) PLUS "transcript" and "_evidence", so the caller can see what
+        capture.py heard and what extract.py derived from it, not just the
+        final numbers. Also, best-effort, "transcript_en" — an English
+        translation (Sarvam text.translate) of "transcript", present
+        whenever language_code isn't already "en-IN" and translation
+        succeeds; a translation failure just omits the field, same
+        non-fatal contract as the TTS fields below. Also, best-effort,
+        "question_audio_b64" (base64 WAV,
+        bulbul-v3) plus "question_audio_for_id" and "question_audio_language".
+        If language_code is "hi-IN" AND the computed question has a
+        hand-written Hindi entry in HINDI_QUESTIONS below, that Hindi
+        text is spoken. Otherwise — any other language, or Hindi with no
+        matching entry — this FALLS BACK to speaking the raw English
+        question_en in en-IN ("question_audio_fallback": true), rather
+        than staying silent or erroring. All these fields are simply
+        absent if TTS itself fails; TTS failure never fails the whole
+        call. language_code also selects the STT language passed to
+        capture.transcribe() for every audio_path; defaults to "hi-IN".
+
+        audio_paths (JSON branch) is a LIST because the demo's consultation
+        is recorded as several short single-utterance files
+        (demo/mock_hi-IN/mock_line_*.wav) rather than one long take — each is
+        transcribed and the results are joined into one transcript for
+        extract.py. A single-element list works fine for a one-file
+        consultation too. The multipart branch always sends exactly one
+        recording, so it's wrapped in a single-element list the same way.
 
         Any failure in transcription, document scanning, or evidence
         extraction is caught and returned as a clean 502 JSON error
@@ -70,7 +96,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -134,41 +160,36 @@ class AssessRequest(BaseModel):
     language_code: str = "hi-IN"
 
 
-@app.post("/assess")
-def assess(req: AssessRequest):
-    if _offline:
-        if not OFFLINE_RESPONSE_PATH.exists():
-            raise HTTPException(
-                500,
-                f"--offline is set but {OFFLINE_RESPONSE_PATH} doesn't exist "
-                "yet — see this file's module docstring for how to create it.",
-            )
-        return json.loads(OFFLINE_RESPONSE_PATH.read_text(encoding="utf-8"))
-
+def _run_assessment(audio_paths, image_path, actions_taken, language_code):
+    """The actual assess pipeline: transcribe -> scan -> extract -> engine ->
+    best-effort TTS. Shared by both branches of assess() below — JSON
+    audio_paths and multipart-uploaded audio converge here once each has a
+    server-side file path in hand, so this is the ONE place that logic
+    lives."""
     # capture.transcribe() returns the full batch-STT result dict (diarized
     # entries, request_id, etc.) — extract.py only needs the flat transcript
     # text, not per-speaker attribution, so that's all that's passed on.
     # See capture.py's transcribe() docstring for the full return shape if
     # diarization ever needs to reach extract.py too.
     transcript_parts = []
-    for p in req.audio_paths:
+    for p in audio_paths:
         audio_path = Path(p)
         if not audio_path.exists():
             raise HTTPException(400, f"audio_path not found: {audio_path}")
         try:
-            stt_result = capture.transcribe(str(audio_path), language_code=req.language_code)
+            stt_result = capture.transcribe(str(audio_path), language_code=language_code)
         except Exception as e:
             raise HTTPException(502, f"transcription failed for {audio_path.name}: {e}")
         transcript_parts.append(stt_result["transcript"])
     transcript = "\n".join(transcript_parts)
 
     doc_text = ""
-    if req.image_path:
-        image_path = Path(req.image_path)
-        if not image_path.exists():
-            raise HTTPException(400, f"image_path not found: {image_path}")
+    if image_path:
+        img_path = Path(image_path)
+        if not img_path.exists():
+            raise HTTPException(400, f"image_path not found: {img_path}")
         try:
-            doc_text = capture.read_image(str(image_path))["text"]
+            doc_text = capture.read_image(str(img_path))["text"]
         except Exception as e:
             raise HTTPException(502, f"document scan failed: {e}")
 
@@ -177,9 +198,23 @@ def assess(req: AssessRequest):
     except Exception as e:
         raise HTTPException(502, f"evidence extraction failed: {e}")
 
-    payload = get_engine().assess(evidence, actions_taken=req.actions_taken)
+    payload = get_engine().assess(evidence, actions_taken=actions_taken)
     payload["transcript"] = transcript
     payload["_evidence"] = evidence
+
+    # Best-effort English gloss of the transcript, for the frontend to show
+    # under the in-language transcript (the "what did I just record" check
+    # for a professional who doesn't read the selected language). Skipped
+    # entirely when the language IS English — there's nothing to gloss —
+    # and, like the TTS block below, a translation failure never fails the
+    # whole /assess call: the field is just absent.
+    if transcript.strip() and language_code != "en-IN":
+        try:
+            payload["transcript_en"] = capture.translate(
+                transcript, source_language_code=language_code,
+                target_language_code="en-IN")
+        except Exception:
+            pass
 
     # Best-effort spoken audio for the computed question, base64'd straight
     # into the response rather than a separate static route (nothing else
@@ -188,7 +223,7 @@ def assess(req: AssessRequest):
     # assessment, so this is deliberately non-fatal — omit the field rather
     # than 502 the whole call.
     qid, qtext_hi = (_pick_hindi_question(payload)
-                     if req.language_code == "hi-IN" else (None, None))
+                     if language_code == "hi-IN" else (None, None))
     if qtext_hi:
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -222,6 +257,62 @@ def assess(req: AssessRequest):
                 tmp_path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+    return payload
+
+
+@app.post("/assess")
+async def assess(request: Request):
+    if _offline:
+        if not OFFLINE_RESPONSE_PATH.exists():
+            raise HTTPException(
+                500,
+                f"--offline is set but {OFFLINE_RESPONSE_PATH} doesn't exist "
+                "yet — see this file's module docstring for how to create it.",
+            )
+        return json.loads(OFFLINE_RESPONSE_PATH.read_text(encoding="utf-8"))
+
+    content_type = request.headers.get("content-type", "")
+    upload_tmp_path = None
+    try:
+        if content_type.startswith("multipart/form-data"):
+            # Live-recording path: the browser's MediaRecorder output,
+            # uploaded as a real file instead of a server-side path. Saved
+            # to a temp file so capture.transcribe() can be called exactly
+            # as it is for the scripted flow — it takes a path either way,
+            # it never learns the difference.
+            form = await request.form()
+            upload = form.get("audio")
+            if upload is None:
+                raise HTTPException(400, "multipart /assess requires an 'audio' file field")
+            suffix = Path(getattr(upload, "filename", "") or "").suffix or ".webm"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(await upload.read())
+                upload_tmp_path = Path(tmp.name)
+            actions_raw = form.get("actions_taken")
+            payload = _run_assessment(
+                audio_paths=[str(upload_tmp_path)],
+                image_path=(form.get("image_path") or None),
+                actions_taken=(json.loads(actions_raw) if actions_raw else []),
+                language_code=(form.get("language_code") or "hi-IN"),
+            )
+        else:
+            try:
+                body = await request.json()
+                req = AssessRequest(**body)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(422, f"invalid /assess JSON body: {e}")
+            payload = _run_assessment(
+                audio_paths=req.audio_paths,
+                image_path=req.image_path,
+                actions_taken=req.actions_taken,
+                language_code=req.language_code,
+            )
+    finally:
+        if upload_tmp_path is not None:
+            upload_tmp_path.unlink(missing_ok=True)
 
     return payload
 

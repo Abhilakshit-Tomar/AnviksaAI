@@ -3,10 +3,12 @@ capture.py — the ears (and mouth). Turns a recorded audio file into a
 diarized transcript, a photographed prescription into text, and text into
 spoken audio.
 
-Three functions, matching day-plan.md step 4:
+Four functions, matching day-plan.md step 4 (translate() added later, for
+showing the live-recording transcript's English gloss in the frontend):
     transcribe(path)        -> dict           (saaras-v3, batch + diarized)
     read_image(path)        -> dict            (sarvam-vision / doc_ai)
     speak(text, out_path)   -> out_path         (bulbul-v3)
+    translate(text)         -> str             (sarvam-translate/mayura)
 
 Every call is cached to cache/ keyed by a hash of its input, so the same
 audio/image/text is never sent to Sarvam twice — vision is capped at
@@ -198,6 +200,32 @@ def speak(text, out_path, language_code="hi-IN", speaker="shubh"):
     out_path = Path(out_path)
     out_path.write_bytes(cpath.read_bytes())
     return str(out_path)
+
+
+# --------------------------------------------------------------------------
+def translate(text, source_language_code="hi-IN", target_language_code="en-IN"):
+    """Text -> translated text, via Sarvam's text.translate (mayura/
+    sarvam-translate). Cached by (text, source, target) same as the other
+    calls here. Best-effort by convention of every caller of this function,
+    not enforced here — returns the translated string or raises, same as
+    speak()/transcribe(); it's the CALLER's job to decide a translation
+    failure shouldn't fail the whole request (see main.py's usage)."""
+    if not text.strip():
+        return ""
+    key_hash = _hash(text, source_language_code, target_language_code)
+    cpath = CACHE_DIR / f"translate_{key_hash}.json"
+    if cpath.exists():
+        return json.loads(cpath.read_text(encoding="utf-8"))["translated_text"]
+
+    resp = _with_retry(
+        client().text.translate,
+        input=text, source_language_code=source_language_code,
+        target_language_code=target_language_code,
+    )
+    translated = getattr(resp, "translated_text", None) or resp["translated_text"]
+    cpath.write_text(json.dumps({"translated_text": translated}, ensure_ascii=False),
+                      encoding="utf-8")
+    return translated
 
 
 # --------------------------------------------------------------------------

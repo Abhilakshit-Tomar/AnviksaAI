@@ -153,6 +153,12 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
 .setupcard input:focus,.setupcard select:focus{outline:none;border-color:var(--blue)}
 .setuprow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .setupcard button{margin-top:4px;padding:9px 14px}
+
+/* ---------- live recording ---------- */
+.recdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--critical);margin-right:6px;vertical-align:middle;animation:recpulse 1s ease-in-out infinite}
+@keyframes recpulse{0%,100%{opacity:1}50%{opacity:.25}}
+#live-audio{width:100%}
+#live-result{font-size:12px;color:var(--ink-2);line-height:1.5;padding:2px 0}
 </style>
 </head>
 <body>
@@ -204,6 +210,18 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
       <div class="card" style="flex:0 0 auto">
         <div class="h"><h2>Doctor's note</h2></div>
         <div class="note" id="dnote" style="font-size:12.5px">—</div>
+      </div>
+      <div class="card" style="flex:0 0 auto">
+        <div class="h"><h2>Live recording <span style="font-weight:400;text-transform:none;letter-spacing:0">(test input)</span></h2><span class="tag" id="live-status">idle</span></div>
+        <div style="display:flex;flex-direction:column;gap:9px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <button type="button" id="live-rec">● Record</button>
+            <span id="live-indicator" class="hide" style="font-family:var(--mono);font-size:11px;color:var(--critical)"><span class="recdot"></span>recording…</span>
+          </div>
+          <audio id="live-audio" class="hide" controls></audio>
+          <button type="button" class="primary hide" id="live-send" disabled>Transcribe via live pipeline</button>
+          <div id="live-result" style="display:none"></div>
+        </div>
       </div>
     </div>
 
@@ -693,6 +711,100 @@ async function boot(){
     boot();
   });
 })();
+
+// ===================================================================
+// Live recording — an ADDITIONAL input path, independent of the scripted
+// mock_hi-IN step-through above. Records real mic audio with MediaRecorder,
+// lets the professional replay it before sending, then uploads it to
+// /assess as multipart/form-data (main.py branches on content-type: JSON
+// body -> existing audio_paths flow unchanged, multipart -> this new
+// upload flow, see main.py's assess()). Deliberately does not touch
+// STAGES/tx/render()/reset() — its own status line ($('live-result')) is
+// the only place its output goes.
+// ===================================================================
+let liveStream=null, liveRecorder=null, liveChunks=[], liveBlob=null;
+
+async function liveToggleRecord(){
+  const btn=$('live-rec');
+  if(liveRecorder && liveRecorder.state==='recording'){
+    liveRecorder.stop();
+    return;
+  }
+  try{
+    liveStream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    $('live-result').style.display='block';
+    $('live-result').textContent='Microphone access failed: '+e.message;
+    return;
+  }
+  liveChunks=[];
+  liveBlob=null;
+  $('live-audio').classList.add('hide');
+  $('live-send').classList.add('hide');
+  $('live-send').disabled=true;
+  $('live-result').style.display='none';
+  liveRecorder=new MediaRecorder(liveStream);
+  liveRecorder.ondataavailable=e=>{ if(e.data && e.data.size>0) liveChunks.push(e.data); };
+  liveRecorder.onstop=()=>{
+    liveStream.getTracks().forEach(t=>t.stop());
+    liveStream=null;
+    liveBlob=new Blob(liveChunks, {type: liveRecorder.mimeType || 'audio/webm'});
+    const url=URL.createObjectURL(liveBlob);
+    const audioEl=$('live-audio');
+    audioEl.src=url;
+    audioEl.classList.remove('hide');
+    $('live-send').classList.remove('hide');
+    $('live-send').disabled=false;
+    btn.textContent='● Record';
+    btn.classList.remove('primary');
+    $('live-indicator').classList.add('hide');
+    $('live-status').textContent='recorded · '+liveBlob.size+' bytes';
+  };
+  liveRecorder.start();
+  btn.textContent='■ Stop';
+  btn.classList.add('primary');
+  $('live-indicator').classList.remove('hide');
+  $('live-status').textContent='recording…';
+}
+
+async function liveSend(){
+  if(!liveBlob) return;
+  const btn=$('live-send');
+  btn.disabled=true;
+  const prevText=btn.textContent;
+  btn.textContent='Transcribing…';
+  $('live-result').style.display='block';
+  $('live-result').textContent='Uploading and running the live pipeline (STT → extract → engine)…';
+  try{
+    const fd=new FormData();
+    const ext=(liveBlob.type||'').includes('ogg')?'ogg':'webm';
+    fd.append('audio', liveBlob, 'live_recording.'+ext);
+    fd.append('language_code', (SETUP && SETUP.languageCode) || 'hi-IN');
+    const res=await fetch('/assess', {method:'POST', body: fd});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
+    const t=data.transcript ? data.transcript.replace(/</g,'&lt;') : '(empty transcript)';
+    let html=`<b>Transcript:</b> ${t}`;
+    // transcript_en (main.py, capture.translate) is only present when the
+    // selected language isn't already English and translation succeeded —
+    // omitted entirely on en-IN or on a translation failure, so this row
+    // just doesn't render rather than showing a stale/duplicate line.
+    if(data.transcript_en){
+      html+=`<div style="margin-top:5px;color:var(--muted);font-style:italic">`
+          +`<b style="color:var(--ink-2);font-style:normal">English:</b> `
+          +`${data.transcript_en.replace(/</g,'&lt;')}</div>`;
+    }
+    $('live-result').innerHTML=html;
+  }catch(e){
+    $('live-result').textContent='Live transcription failed: '+e.message;
+  }finally{
+    btn.disabled=false;
+    btn.textContent=prevText;
+  }
+}
+
+$('live-rec').onclick=liveToggleRecord;
+$('live-send').onclick=liveSend;
 </script>
 </body>
 </html>
