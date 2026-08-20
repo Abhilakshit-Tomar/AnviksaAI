@@ -62,6 +62,11 @@ def main():
     ap.add_argument("--dump", action="store_true", help="write contract.json")
     ap.add_argument("--stage", type=int, default=2,
                     help="which stage to dump (default 2, the reveal)")
+    ap.add_argument("--dump-all", action="store_true",
+                    help="write contract.json as {stages:[...]} covering "
+                         "stages 2-4 (reveal, answered, worked-up) so the "
+                         "frontend's step-through has real data for all "
+                         "three panel states, not just one snapshot")
     ap.add_argument("--tau", type=float, default=None)
     args = ap.parse_args()
 
@@ -89,7 +94,28 @@ def main():
         for m in out["misfits"][:2]:
             print(f"  doesn't fit  : {m['text']}")
 
-    if args.dump:
+    if args.dump_all:
+        # stages 2-4 (0-indexed 1-3): the reveal, the answered question, and
+        # the worked-up/excluded state. Stage 1 ("presenting") is never shown
+        # in the UI — Can't-Miss stays locked until the commit, and by the
+        # time it unlocks the pill strip and travel history are already in.
+        stages_out = []
+        for label, evidence, actions in STAGES[1:4]:
+            payload = eng.assess(evidence, actions_taken=actions)
+            payload["_stage"] = label
+            payload["_evidence"] = evidence
+            stages_out.append(payload)
+        doc = {
+            "_note": ("Real engine output over real DDXPlus counts, one "
+                      "entry per demo stage. Frontend builds against this "
+                      "shape — see web/index.html's STAGE_LABELS."),
+            "stages": stages_out,
+        }
+        with open("contract.json", "w") as f:
+            json.dump(doc, f, indent=2)
+        print(f"\nwrote contract.json with {len(stages_out)} stages "
+              f"({', '.join(s['_stage'] for s in stages_out)})")
+    elif args.dump:
         label, evidence, actions = STAGES[args.stage - 1]
         payload = eng.assess(evidence, actions_taken=actions)
         payload["_stage"] = label

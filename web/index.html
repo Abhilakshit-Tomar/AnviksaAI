@@ -212,39 +212,116 @@ const ICON_MIS='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strok
 const ICON_LOCK='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:15px;height:15px;display:block;margin:0 auto 9px"><rect x="3.2" y="7" width="9.6" height="6.4" rx="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7"/></svg>';
 
 // ===================================================================
-// EVERY NUMBER BELOW IS REAL ENGINE OUTPUT.
-// Produced by `python demo_case.py` against counts.npz, built from
-// 1,025,602 DDXPlus training records. Nothing here is illustrative.
+// Differential, Can't-Miss, Doesn't Fit and the question card are built
+// entirely from contract.json — real engine.py output over 1,025,602
+// DDXPlus records, produced by:
+//
+//   python demo_case.py --dump-all
+//
+// Nothing under STAGES below is hand-typed; the functions further down
+// (toBars/toCM/toMIS/toQBODY) only reformat what the engine returned.
+// The transcript lines, doc-scan chips, doctor's note and closing note
+// snippet ARE still hand-authored demo content — engine.py has no
+// opinion on Marathi phrasing or clinical note prose, so those stay as
+// scripted constants until capture.py/extract.py exist (day-plan.md
+// steps 3-5).
 // ===================================================================
+let STAGES = null;      // [stage "2 + pill strip + travel", stage "3 + calf", stage "4 + tests"]
+let LOAD_ERROR = null;
 
-// stage 2 — after the pill strip and the travel history
-const DX0=[['Panic attack',46.4],['Pericarditis',13.5],['Pulmonary embolism',9.8],['PSVT',3.7],['Possible NSTEMI / STEMI',3.3],['Unstable angina',3.2],['Boerhaave',3.0]];
-// stage 3 — after the swelling answer
-const DX1=[['Pulmonary embolism',60.2],['Panic attack',15.8],['Acute pulmonary edema',5.9],['Pericarditis',4.7],['Spontaneous pneumothorax',1.7],['PSVT',1.4],['Spontaneous rib fracture',1.4]];
+async function loadContract(){
+  try{
+    // web/index.html fetching ../contract.json assumes the repo root is
+    // served over http (e.g. `python -m http.server` run from the repo
+    // root, or main.py once it exists). Opened directly as a file:// URL,
+    // fetch() of a local file is blocked by the browser and this will
+    // fail — that's expected until there's a server in front of it.
+    const res = await fetch('../contract.json', {cache:'no-store'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const doc = await res.json();
+    if(!doc.stages || doc.stages.length<3){
+      throw new Error('contract.json has no "stages" array — run: python demo_case.py --dump-all');
+    }
+    STAGES = doc.stages;
+  }catch(e){
+    LOAD_ERROR = e.message;
+  }
+}
 
-const CM0=[
- {n:'Pulmonary embolism',p:0.0976,s:100,lvl:'critical',w:'Hormone use and recent international travel are both in the record now. Neither was asked about.'},
- {n:'Pericarditis',p:0.1349,s:30,lvl:'serious',w:'Not excluded. No ECG on file.'},
- {n:'Possible NSTEMI / STEMI',p:0.0329,s:100,lvl:'serious',w:'Cardiac presentations in women are disproportionately attributed to anxiety.'},
- {n:'Unstable angina',p:0.0317,s:100,lvl:'serious',w:'Not excluded. ECG and troponin would settle it.'}];
-const CM1=[
- {n:'Pulmonary embolism',p:0.6016,s:100,lvl:'critical',w:'Unilateral calf swelling confirmed. D-dimer and CTPA indicated before any discharge.'},
- {n:'Acute pulmonary edema',p:0.0589,s:100,lvl:'critical',w:'Still not excluded. Chest X-ray would settle it.'},
- {n:'Pericarditis',p:0.0473,s:30,lvl:'serious',w:'Now a distant possibility, but no ECG has been done.'},
- {n:'Possible NSTEMI / STEMI',p:0.0118,s:100,lvl:'serious',w:'Low, and still not formally excluded.'}];
-// stage 4 — ECG, troponin and d-dimer done. PE and both ACS entries leave.
-const CM2=[
- {n:'Acute pulmonary edema',p:0.0589,s:100,lvl:'critical',w:'Not covered by the tests just done. Chest X-ray still outstanding.'},
- {n:'Boerhaave',p:0.0117,s:100,lvl:'serious',w:'Low, but no imaging has excluded it.'}];
+// -------- pure formatting: engine JSON -> DOM inputs. No clinical text is invented here. --------
+function toBars(stage){
+  return stage.differential.map(d=>[d.name, +(d.p*100).toFixed(1)]);
+}
+function whyText(c){
+  // engine.py doesn't emit a per-condition narrative sentence — only the
+  // numbers and the excluded_by test list. This restates that list; it
+  // does not add any clinical claim engine.py didn't already make.
+  if(c.excluded_by && c.excluded_by.length) return `Not yet excluded. Rules out: ${c.excluded_by.join(', ')}.`;
+  return 'Not yet excluded.';
+}
+function toCM(stage){
+  return stage.cant_miss.map(c=>({n:c.name, p:c.p, s:c.severity, lvl:c.level, w:whyText(c)}));
+}
+function toMIS(stage){
+  return stage.misfits.map(m=>
+    m.against ? m.text.split(m.against).join(`<b>${m.against}</b>`) : m.text);
+}
 
-const MIS0=[
- 'Do you currently take hormones? — <b>Panic attack</b> does not explain this (0.0% of cases); <b>Pulmonary embolism</b> does (29%).',
- 'Travelled out of the country in the last 4 weeks — Panic attack does not explain this (0.0% of cases).',
- 'Pain in the upper chest — Panic attack explains this in only 6.7% of cases; Boerhaave in 75%.'];
-const MIS1=[
- 'Palpitations — <b>Pulmonary embolism</b> does not explain this (0.0%); PSVT does (99%).',
- 'Feeling anxious — Pulmonary embolism does not explain this (0.0%); PSVT does (68%).'];
+// The hero narrative asks about calf swelling (E_151) and gets it
+// answered — the scripted transcript (Q_ASK/Q_ANS below) and stage 3's
+// evidence are both built around that. But E_151 is NOT the true #1
+// question at this stage by information gain; "surgery in the last
+// month?" (E_196) ranks higher. day-plan.md flagged this explicitly as a
+// decision to make deliberately, not discover on stage — this is that
+// decision, made in favour of the calf question so the rest of the demo
+// stays internally consistent. Set FOLLOW_QUESTION_ID to null to always
+// render the true #1 question instead (then the transcript needs a
+// rewrite to match).
+const FOLLOW_QUESTION_ID = 'E_151';
+// Only translations a human has actually reviewed go here (day-plan.md:
+// "Get the Marathi checked by a native speaker"). Any question without an
+// entry renders English-only rather than a guessed translation.
+const MARATHI_Q = { E_151: 'तुमच्या शरीरावर कुठे सूज आहे का?' };
 
+function pickQuestion(stage){
+  if(FOLLOW_QUESTION_ID && stage.best_question && stage.best_question.id!==FOLLOW_QUESTION_ID){
+    const alt=(stage.runners_up||[]).find(r=>r.id===FOLLOW_QUESTION_ID);
+    if(alt) return alt;
+  }
+  return stage.best_question;
+}
+function branchNote(p, diffTop){
+  if(p>=diffTop) return 'top of differential';
+  if(p<0.05) return 'drops off list';
+  return '';
+}
+function toQBODY(stage){
+  const q=pickQuestion(stage);
+  if(!q) return null;
+  const diffTop=stage.differential[0].p;
+  const orig=MARATHI_Q[q.id];
+  const runners=(stage.runners_up||[]).filter(r=>r.id!==q.id).slice(0,3);
+  const yn=(p)=>{const note=branchNote(p,diffTop);return (p*100).toFixed(1)+'%'+(note?` · ${note}`:'');};
+  return {
+    ig:q.ig,
+    html:`
+    <div class="q">${q.en}</div>
+    ${orig?`<div class="qo">${orig}</div>`:''}
+    <div class="branches">
+      <div class="br yes"><div class="l">IF YES</div><div class="v">${q.about} → <b>${yn(q.branches.yes)}</b></div></div>
+      <div class="br no"><div class="l">IF NO</div><div class="v">${q.about} → <b>${yn(q.branches.no)}</b></div></div>
+    </div>
+    <div class="ask">
+      <button class="primary" id="askbtn">Ask this aloud</button>
+      <span class="speak" id="spk"><span class="wave"><i></i><i></i><i></i><i></i></span>bulbul-v3 · मराठी</span>
+    </div>
+    <div class="alts">
+      ${runners.map(r=>`<div class="alt"><span class="ig">${r.ig.toFixed(3)} bit</span><span>${r.en}</span></div>`).join('')}
+    </div>`
+  };
+}
+
+// -------- hand-authored demo content: not engine output (see header note) --------
 const SNIP=`34F, chest tightness + dyspnoea x1d, sudden onset.
 On hormone therapy (per blister strip — not previously
 recorded). International travel 4 days ago. Unilateral
@@ -298,23 +375,6 @@ function utt(u){
 }
 function svc(id,on){$(id).classList.toggle('on',on)}
 
-const QBODY=`
-  <div class="q">Do you have swelling in one or more areas of your body?</div>
-  <div class="qo">तुमच्या शरीरावर कुठे सूज आहे का?</div>
-  <div class="branches">
-    <div class="br yes"><div class="l">IF YES</div><div class="v">PE → <b>88.0%</b> · top of differential</div></div>
-    <div class="br no"><div class="l">IF NO</div><div class="v">PE → <b>1.1%</b> · drops off list</div></div>
-  </div>
-  <div class="ask">
-    <button class="primary" id="askbtn">Ask this aloud</button>
-    <span class="speak" id="spk"><span class="wave"><i></i><i></i><i></i><i></i></span>bulbul-v3 · मराठी</span>
-  </div>
-  <div class="alts">
-    <div class="alt"><span class="ig">0.798 bit</span><span>Have you had surgery within the last month?</span></div>
-    <div class="alt"><span class="ig">0.609 bit</span><span>Does the pain radiate to another location?</span></div>
-    <div class="alt"><span class="ig">0.524 bit</span><span>Is the pain worse when you breathe in deeply?</span></div>
-  </div>`;
-
 const LOCKED=`<div class="empty locked">${ICON_LOCK}Held back until the clinician records their own impression.<br><span>Showing a differential first would anchor the reader — the failure mode this tool exists to prevent.</span></div>`;
 
 const LABELS=['Start consultation','Continue','Scan patient records','Record impression','Reveal analysis','Compute best question','Ask it aloud','Update posterior','Order ECG + troponin + d-dimer','Draft for record','Replay'];
@@ -341,23 +401,26 @@ function render(){
   }
   if(step===4){$('dnote').textContent='?anxiety / panic attack — reassure, propranolol 10';}
   if(step===5){
-    paintBars($('dx'),bars(DX0));$('dxtag').textContent='naive bayes · DDXPlus';
-    $('cm').innerHTML=cmHtml(CM0,true);
-    $('mis').innerHTML=MIS0.map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
+    paintBars($('dx'),bars(toBars(STAGES[0])));$('dxtag').textContent='naive bayes · DDXPlus';
+    $('cm').innerHTML=cmHtml(toCM(STAGES[0]),true);
+    $('mis').innerHTML=toMIS(STAGES[0]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
   }
-  if(step===6){$('qbody').innerHTML=QBODY;$('igtag').textContent='IG 0.750 bit';bindAsk();}
+  if(step===6){
+    const qb=toQBODY(STAGES[0]);
+    $('qbody').innerHTML=qb.html;$('igtag').textContent='IG '+qb.ig.toFixed(3)+' bit';bindAsk();
+  }
   if(step===7){utt(Q_ASK);$('spk')&&$('spk').classList.add('active');}
   if(step===8){
     utt(Q_ANS);$('spk')&&$('spk').classList.remove('active');
-    paintBars($('dx'),bars(DX1,DX0));
-    $('cm').innerHTML=cmHtml(CM1,true);
-    $('mis').innerHTML=MIS1.map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
+    paintBars($('dx'),bars(toBars(STAGES[1]),toBars(STAGES[0])));
+    $('cm').innerHTML=cmHtml(toCM(STAGES[1]),true);
+    $('mis').innerHTML=toMIS(STAGES[1]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
     $('qbody').innerHTML='<div class="empty">Answered. No remaining question changes management.</div>';
     $('igtag').textContent='';
   }
   if(step===9){
     // the panel must be able to FINISH. this is the alert-fatigue answer.
-    $('cm').innerHTML=cmHtml(CM2,true);
+    $('cm').innerHTML=cmHtml(toCM(STAGES[2]),true);
     $('cmtag').textContent='ECG · troponin · d-dimer done';
     utt({w:'Doctor',o:'ECG, troponin आणि d-dimer करून घ्या.',e:'Get an ECG, troponin and d-dimer done.'});
   }
@@ -391,7 +454,19 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='ArrowLeft'){e.preventDefault();go(-1)}
   else if(e.key==='r'||e.key==='R'){reset()}
 });
-reset();
+
+(async function boot(){
+  $('next').disabled=true;
+  $('next').textContent='Loading contract.json…';
+  await loadContract();
+  if(LOAD_ERROR){
+    $('next').textContent='contract.json failed to load';
+    $('tx').innerHTML=`<div class="empty">Could not load contract.json: ${LOAD_ERROR}<br>Run <code>python demo_case.py --dump-all</code> in the repo root, serve this folder over http (not file://), then reload.</div>`;
+    return;
+  }
+  $('next').disabled=false;
+  reset();
+})();
 </script>
 </body>
 </html>
