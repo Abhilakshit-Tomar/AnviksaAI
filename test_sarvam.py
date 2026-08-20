@@ -26,6 +26,7 @@ import base64
 import io
 import os
 import sys
+import time
 
 def fail(step, e):
     print(f"\n FAILED at: {step}")
@@ -36,6 +37,10 @@ def fail(step, e):
     sys.exit(1)
 
 def main():
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+
     try:
         from dotenv import load_dotenv
         load_dotenv()
@@ -66,8 +71,8 @@ def main():
     try:
         tts_resp = client.text_to_speech.convert(
             text=text_mr,
-            target_language_code="mr-IN",
-            speaker="anushka",
+            language_code="mr-IN",
+            speaker="shubh",
             model="bulbul:v3",
         )
         audios = getattr(tts_resp, "audios", None) or tts_resp["audios"]
@@ -119,9 +124,22 @@ def main():
                 language="en-IN",
                 output_format="md",
             )
-            job.wait_until_complete()
-            results = job.get_file_results()
-            print(f" sarvam-vision job finished: {results}")
+            # No wait-for-completion helper on the job object in this SDK
+            # version — poll get_status(job_id) by hand. A tiny one-page
+            # synthetic image finishes in ~1s; 60s is a generous timeout.
+            deadline = time.time() + 60
+            status = job.status
+            while status not in ("completed", "failed"):
+                if time.time() > deadline:
+                    raise TimeoutError(f"doc_ai job {job.job_id} still "
+                                        f"'{status}' after 60s")
+                time.sleep(2)
+                status = client.doc_ai.get_status(job.job_id).status
+            if status == "failed":
+                raise RuntimeError(f"doc_ai job {job.job_id} failed")
+            results = client.doc_ai.get_results(job.job_id)
+            text = results.documents[0].pages[0].blocks[0]["text"]
+            print(f" sarvam-vision read back: \"{text}\"")
         except Exception as e:
             fail("sarvam-vision document intelligence", e)
 

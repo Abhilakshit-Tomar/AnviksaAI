@@ -18,6 +18,7 @@ release_test_patients.zip
 
 # --- generated ---------------------------------------------------------
 cache/
+cache_test_bulbul.wav
 __pycache__/
 *.pyc
 .venv/
