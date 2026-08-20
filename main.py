@@ -14,21 +14,31 @@ together, per day-plan.md step 6.
            repo root main.py runs from) — this is what web/index.html's
            loadContract() sends, replaying demo/mock_hi-IN/*.wav.
 
-        2. multipart/form-data (live recording, additional path):
-           a file field "audio" (any audio format the browser's
-           MediaRecorder produced — typically audio/webm) plus optional
-           form fields "language_code", "image_path", "actions_taken"
-           (JSON-encoded list, e.g. '["ecg"]'). The upload is written to a
-           temp file and that path is handed to capture.transcribe() the
-           exact same way a demo/mock_hi-IN path would be — capture.py
-           itself needed no changes. The temp file is deleted after the
-           request finishes, success or failure.
+        2. multipart/form-data (live recording and/or patient-supplied
+           documents, additional paths):
+           an optional file field "audio" (any audio format the browser's
+           MediaRecorder produced — typically audio/webm), optional
+           repeated file fields "documents" (multiple prescriptions/pill
+           strip photos/reports — any image or PDF capture.read_image()
+           accepts), plus optional form fields "language_code",
+           "image_path" (single legacy path, kept for parity with the JSON
+           branch), "actions_taken" (JSON-encoded list, e.g. '["ecg"]').
+           At least one of "audio" or "documents" is required. Every
+           upload is written to a temp file — audio is handed to
+           capture.transcribe() and each document to capture.read_image()
+           the exact same way a demo/mock_hi-IN path would be — capture.py
+           itself needed no changes for either. Temp files are deleted
+           after the request finishes, success or failure.
 
         Both branches converge on the same response shape: the contract.json
         shape (differential, cant_miss, best_question, runners_up, misfits,
         ...) PLUS "transcript" and "_evidence", so the caller can see what
         capture.py heard and what extract.py derived from it, not just the
-        final numbers. Also, best-effort, "transcript_en" — an English
+        final numbers. Also "scanned_documents" — a list of
+        {"name": filename, "chars": N} for every document OCR'd this call
+        (empty list if none), so the frontend's "Patient-supplied records"
+        panel can show a real count/list instead of the scripted demo's
+        hardcoded chips. Also, best-effort, "transcript_en" — an English
         translation (Sarvam text.translate) of "transcript", present
         whenever language_code isn't already "en-IN" and translation
         succeeds; a translation failure just omits the field, same
@@ -160,12 +170,18 @@ class AssessRequest(BaseModel):
     language_code: str = "hi-IN"
 
 
-def _run_assessment(audio_paths, image_path, actions_taken, language_code):
+def _run_assessment(audio_paths, documents, actions_taken, language_code):
     """The actual assess pipeline: transcribe -> scan -> extract -> engine ->
     best-effort TTS. Shared by both branches of assess() below — JSON
-    audio_paths and multipart-uploaded audio converge here once each has a
-    server-side file path in hand, so this is the ONE place that logic
-    lives."""
+    audio_paths/image_path and multipart-uploaded audio/documents converge
+    here once each has a server-side file path in hand, so this is the ONE
+    place that logic lives.
+
+    documents: list of {"path": str, "name": str} — "name" is the
+    human-readable filename (the original upload's filename for the
+    multipart branch, or Path(image_path).name for the JSON branch) used
+    only for "scanned_documents" below and error messages; "path" is what's
+    actually opened."""
     # capture.transcribe() returns the full batch-STT result dict (diarized
     # entries, request_id, etc.) — extract.py only needs the flat transcript
     # text, not per-speaker attribution, so that's all that's passed on.
@@ -183,15 +199,27 @@ def _run_assessment(audio_paths, image_path, actions_taken, language_code):
         transcript_parts.append(stt_result["transcript"])
     transcript = "\n".join(transcript_parts)
 
-    doc_text = ""
-    if image_path:
-        img_path = Path(image_path)
+    # Each uploaded document (medication list, supplement info, prescription,
+    # pill-strip photo, ...) is OCR'd independently via the same
+    # capture.read_image() path already verified for the single blister-strip
+    # photo, then every document's extracted text is joined into ONE doc_text
+    # blob — extract.extract() has always taken a single doc_text string, and
+    # concatenating here (rather than teaching it about multiple documents)
+    # keeps that function unchanged. scanned_documents mirrors this loop so
+    # the frontend can show what was actually scanned, not just a page count.
+    doc_chunks = []
+    scanned_documents = []
+    for doc in documents:
+        img_path = Path(doc["path"])
         if not img_path.exists():
             raise HTTPException(400, f"image_path not found: {img_path}")
         try:
-            doc_text = capture.read_image(str(img_path))["text"]
+            text = capture.read_image(str(img_path))["text"]
         except Exception as e:
-            raise HTTPException(502, f"document scan failed: {e}")
+            raise HTTPException(502, f"document scan failed for {doc['name']}: {e}")
+        doc_chunks.append(text)
+        scanned_documents.append({"name": doc["name"], "chars": len(text)})
+    doc_text = "\n\n".join(doc_chunks)
 
     try:
         evidence = extract.extract(transcript, doc_text)
@@ -201,6 +229,7 @@ def _run_assessment(audio_paths, image_path, actions_taken, language_code):
     payload = get_engine().assess(evidence, actions_taken=actions_taken)
     payload["transcript"] = transcript
     payload["_evidence"] = evidence
+    payload["scanned_documents"] = scanned_documents
 
     # Best-effort English gloss of the transcript, for the frontend to show
     # under the in-language transcript (the "what did I just record" check
@@ -273,26 +302,47 @@ async def assess(request: Request):
         return json.loads(OFFLINE_RESPONSE_PATH.read_text(encoding="utf-8"))
 
     content_type = request.headers.get("content-type", "")
-    upload_tmp_path = None
+    tmp_paths = []  # every temp file this request creates, cleaned up in `finally` below
     try:
         if content_type.startswith("multipart/form-data"):
-            # Live-recording path: the browser's MediaRecorder output,
-            # uploaded as a real file instead of a server-side path. Saved
-            # to a temp file so capture.transcribe() can be called exactly
-            # as it is for the scripted flow — it takes a path either way,
-            # it never learns the difference.
+            # Live-recording and/or patient-document path: the browser's
+            # MediaRecorder output and/or scanned files, uploaded as real
+            # files instead of server-side paths. Each is saved to a temp
+            # file so capture.transcribe()/capture.read_image() can be
+            # called exactly as they are for the scripted flow — they take
+            # a path either way, they never learn the difference.
             form = await request.form()
+            audio_paths = []
             upload = form.get("audio")
-            if upload is None:
-                raise HTTPException(400, "multipart /assess requires an 'audio' file field")
-            suffix = Path(getattr(upload, "filename", "") or "").suffix or ".webm"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(await upload.read())
-                upload_tmp_path = Path(tmp.name)
+            if upload is not None:
+                suffix = Path(getattr(upload, "filename", "") or "").suffix or ".webm"
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(await upload.read())
+                    audio_tmp_path = Path(tmp.name)
+                tmp_paths.append(audio_tmp_path)
+                audio_paths = [str(audio_tmp_path)]
+
+            documents = []
+            for doc_upload in form.getlist("documents"):
+                name = getattr(doc_upload, "filename", "") or "document"
+                suffix = Path(name).suffix or ".jpg"
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(await doc_upload.read())
+                    doc_tmp_path = Path(tmp.name)
+                tmp_paths.append(doc_tmp_path)
+                documents.append({"path": str(doc_tmp_path), "name": name})
+
+            legacy_image_path = form.get("image_path")
+            if legacy_image_path:
+                documents.append({"path": legacy_image_path, "name": Path(legacy_image_path).name})
+
+            if not audio_paths and not documents:
+                raise HTTPException(400, "multipart /assess requires an 'audio' file and/or 'documents' files")
+
             actions_raw = form.get("actions_taken")
             payload = _run_assessment(
-                audio_paths=[str(upload_tmp_path)],
-                image_path=(form.get("image_path") or None),
+                audio_paths=audio_paths,
+                documents=documents,
                 actions_taken=(json.loads(actions_raw) if actions_raw else []),
                 language_code=(form.get("language_code") or "hi-IN"),
             )
@@ -304,15 +354,16 @@ async def assess(request: Request):
                 raise
             except Exception as e:
                 raise HTTPException(422, f"invalid /assess JSON body: {e}")
+            documents = [{"path": req.image_path, "name": Path(req.image_path).name}] if req.image_path else []
             payload = _run_assessment(
                 audio_paths=req.audio_paths,
-                image_path=req.image_path,
+                documents=documents,
                 actions_taken=req.actions_taken,
                 language_code=req.language_code,
             )
     finally:
-        if upload_tmp_path is not None:
-            upload_tmp_path.unlink(missing_ok=True)
+        for p in tmp_paths:
+            p.unlink(missing_ok=True)
 
     return payload
 

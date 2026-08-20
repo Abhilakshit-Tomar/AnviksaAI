@@ -206,6 +206,11 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
       <div class="card" style="flex:0 0 auto">
         <div class="h"><h2>Patient-supplied records</h2><span class="tag" id="docn">0 scanned</span></div>
         <div id="docs"><div class="empty">No documents scanned.</div></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:9px">
+          <input type="file" id="doc-files" multiple accept="image/*,.pdf" style="font-size:12px;max-width:220px;color:var(--muted)">
+          <button type="button" class="primary" id="doc-send" disabled>Scan documents</button>
+        </div>
+        <div id="doc-result" style="display:none;margin-top:6px"></div>
       </div>
       <div class="card" style="flex:0 0 auto">
         <div class="h"><h2>Doctor's note</h2></div>
@@ -813,6 +818,69 @@ async function liveSend(){
 
 $('live-rec').onclick=liveToggleRecord;
 $('live-send').onclick=liveSend;
+
+// ===================================================================
+// Patient-supplied records — an ADDITIONAL input path into the SAME
+// "Patient-supplied records" panel the scripted flow's step 3 already
+// fills with the hardcoded blister-strip chips. Real uploads run through
+// capture.read_image() per file (main.py's multipart /assess branch,
+// "documents" field), get combined into one doc_text, and come back as
+// "scanned_documents" (filename + extracted-char-count) — rendered here
+// with the exact .doc/.thumb/.docmeta/.chip markup step===3 uses, so a
+// real scan looks like it belongs in the same panel as the demo's. There
+// is no per-file evidence-code chip here (unlike the scripted RX/E_100
+// chips): extract.py only ever sees the COMBINED doc_text, so there's no
+// real per-document evidence to attribute a chip to without inventing one.
+// ===================================================================
+let docFiles=[];
+$('doc-files').onchange=()=>{
+  docFiles=Array.from($('doc-files').files);
+  $('doc-send').disabled=docFiles.length===0;
+};
+
+function renderScannedDocs(list){
+  if(!list.length) return;
+  if($('docs').querySelector('.empty')) $('docs').innerHTML='';
+  list.forEach(d=>{
+    const el=document.createElement('div');
+    el.className='doc';
+    el.innerHTML=`<div class="thumb"></div><div class="docmeta">
+      <div class="t">${escHtml(d.name)}</div>
+      <span class="chip"><span class="k">OCR</span> ${d.chars} chars extracted</span>
+    </div>`;
+    $('docs').appendChild(el);
+  });
+  $('docn').textContent=$('docs').querySelectorAll('.doc').length+' scanned';
+}
+
+async function docSend(){
+  if(!docFiles.length) return;
+  const btn=$('doc-send');
+  btn.disabled=true;
+  const prevText=btn.textContent;
+  btn.textContent='Scanning…';
+  $('doc-result').style.display='block';
+  $('doc-result').textContent='Uploading '+docFiles.length+' file(s) and running OCR/vision + extraction…';
+  try{
+    const fd=new FormData();
+    docFiles.forEach(f=>fd.append('documents', f, f.name));
+    fd.append('language_code', (SETUP && SETUP.languageCode) || 'hi-IN');
+    const res=await fetch('/assess', {method:'POST', body: fd});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
+    renderScannedDocs(data.scanned_documents || []);
+    $('doc-result').textContent='Scanned — panel above updated.';
+  }catch(e){
+    $('doc-result').textContent='Document scan failed: '+e.message;
+  }finally{
+    btn.disabled=false;
+    btn.textContent=prevText;
+    docFiles=[];
+    $('doc-files').value='';
+    $('doc-send').disabled=true;
+  }
+}
+$('doc-send').onclick=docSend;
 </script>
 </body>
 </html>
