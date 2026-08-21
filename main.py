@@ -42,19 +42,26 @@ together, per day-plan.md step 6.
         scripted demo's hardcoded chips. Also, best-effort, "transcript_en" — an English
         translation (Sarvam text.translate) of "transcript", present
         whenever language_code isn't already "en-IN" and translation
-        succeeds; a translation failure just omits the field, same
-        non-fatal contract as the TTS fields below. Also, best-effort,
-        "question_audio_b64" (base64 WAV,
-        bulbul-v3) plus "question_audio_for_id" and "question_audio_language".
-        If language_code is "hi-IN" AND the computed question has a
-        hand-written Hindi entry in HINDI_QUESTIONS below, that Hindi
-        text is spoken. Otherwise — any other language, or Hindi with no
-        matching entry — this FALLS BACK to speaking the raw English
-        question_en in en-IN ("question_audio_fallback": true), rather
-        than staying silent or erroring. All these fields are simply
-        absent if TTS itself fails; TTS failure never fails the whole
-        call. language_code also selects the STT language passed to
-        capture.transcribe() for every audio_path; defaults to "hi-IN".
+        succeeds; a translation failure just omits the field. language_code
+        also selects the STT language passed to capture.transcribe() for
+        every audio_path; defaults to "hi-IN".
+
+    POST /capture  -> lean STT-or-OCR-only sibling of /assess, no
+        extract()/engine.assess() call. multipart/form-data with either one
+        "audio" file (+ optional "language_code") -> {"transcript": str,
+        "transcript_en": str|absent}, or one-or-more "documents" files ->
+        {"scanned_documents": [{"name", "chars", "text"}, ...]}. This is
+        what web/index.html's live-recording and document-upload flows
+        actually call now: previously they hit /assess for the STT/OCR AND
+        got a full extract()+engine.assess()+TTS run whose result was
+        immediately thrown away (the panels were painted from a SEPARATE
+        /analyze call over the accumulated transcript, per that route's own
+        docstring below) — every recording or upload was silently burning
+        two full Sarvam extraction calls instead of one. /capture does only
+        the STT/OCR half; /analyze does the extract+engine half once, on the
+        accumulated text. /assess itself is untouched, still available for
+        the JSON audio_paths branch and any caller that wants the combined
+        one-shot pipeline.
 
         audio_paths (JSON branch) is a LIST because the demo's consultation
         is recorded as several short single-utterance files
@@ -101,7 +108,6 @@ Usage:
     python main.py --port 8080
 """
 import argparse
-import base64
 import json
 import os
 import sys
@@ -121,33 +127,6 @@ from engine import Engine
 REPO_ROOT = Path(__file__).parent
 CONTRACT_PATH = REPO_ROOT / "contract.json"
 OFFLINE_RESPONSE_PATH = REPO_ROOT / "demo" / "offline_response.json"
-
-# engine.py's best_question only ever carries English (question_en from
-# DDXPlus — there's no Hindi field anywhere in the dataset or in
-# Engine.best_question()'s output, confirmed by reading engine.py directly,
-# not assumed). Speaking a question aloud therefore needs a hand-written
-# Hindi translation, and only for the ONE question this demo actually asks
-# — web/index.html's FOLLOW_QUESTION_ID already pins the displayed/spoken
-# question to E_151 for narrative consistency (day-plan.md's deliberate
-# choice, see that file's comment), so that's the only code worth having a
-# translation for here. UNVERIFIED hand-written Hindi, not checked by a
-# native speaker — MUST match web/index.html's HINDI_Q[E_151] exactly,
-# since that's the on-screen text for the same spoken line.
-HINDI_QUESTIONS = {
-    "E_151": "क्या आपके शरीर में कहीं सूजन है?",
-}
-
-
-def _pick_hindi_question(payload):
-    """Mirrors web/index.html's pickQuestion(): prefer best_question if its
-    id is one we have Hindi for, else look through runners_up. Returns
-    (evidence_id, hindi_text) or (None, None) if no match — TTS is best
-    effort, not every stage's computed question has a translation."""
-    candidates = [payload.get("best_question")] + list(payload.get("runners_up") or [])
-    for q in candidates:
-        if q and q.get("id") in HINDI_QUESTIONS:
-            return q["id"], HINDI_QUESTIONS[q["id"]]
-    return None, None
 
 app = FastAPI(title="AnviksaAI")
 
@@ -180,8 +159,8 @@ class AnalyzeRequest(BaseModel):
 
 
 def _run_assessment(audio_paths, documents, actions_taken, language_code):
-    """The actual assess pipeline: transcribe -> scan -> extract -> engine ->
-    best-effort TTS. Shared by both branches of assess() below — JSON
+    """The actual assess pipeline: transcribe -> scan -> extract -> engine.
+    Shared by both branches of assess() below — JSON
     audio_paths/image_path and multipart-uploaded audio/documents converge
     here once each has a server-side file path in hand, so this is the ONE
     place that logic lives.
@@ -253,48 +232,6 @@ def _run_assessment(audio_paths, documents, actions_taken, language_code):
                 target_language_code="en-IN")
         except Exception:
             pass
-
-    # Best-effort spoken audio for the computed question, base64'd straight
-    # into the response rather than a separate static route (nothing else
-    # needs to serve this file, and it avoids a second round trip). A TTS
-    # failure (rate limit, network) shouldn't take down an otherwise-good
-    # assessment, so this is deliberately non-fatal — omit the field rather
-    # than 502 the whole call.
-    qid, qtext_hi = (_pick_hindi_question(payload)
-                     if language_code == "hi-IN" else (None, None))
-    if qtext_hi:
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-            capture.speak(qtext_hi, tmp_path, language_code="hi-IN")
-            payload["question_audio_b64"] = base64.b64encode(tmp_path.read_bytes()).decode("ascii")
-            payload["question_audio_for_id"] = qid
-            payload["question_audio_language"] = "hi-IN"
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-    else:
-        # KNOWN LIMITATION: HINDI_QUESTIONS above is the only hand-written
-        # translation that exists tonight. Every other selected language —
-        # and Hindi itself, if the computed question has no Hindi entry —
-        # falls back to speaking the raw English question_en text in en-IN,
-        # so "ask this aloud" always produces SOME audio instead of silently
-        # doing nothing or throwing. It is NOT a translation into the
-        # patient's actual language; only the hi-IN path above is real for
-        # this demo. A real deploy needs real per-language translations here.
-        q = payload.get("best_question")
-        if q and q.get("en"):
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    tmp_path = Path(tmp.name)
-                capture.speak(q["en"], tmp_path, language_code="en-IN")
-                payload["question_audio_b64"] = base64.b64encode(tmp_path.read_bytes()).decode("ascii")
-                payload["question_audio_for_id"] = q["id"]
-                payload["question_audio_language"] = "en-IN"
-                payload["question_audio_fallback"] = True
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
 
     return payload
 
@@ -384,6 +321,66 @@ async def assess(request: Request):
             p.unlink(missing_ok=True)
 
     return payload
+
+
+@app.post("/capture")
+async def capture_only(request: Request):
+    """See module docstring: STT-or-OCR only, no extract()/engine.assess().
+    Exactly one of "audio" or one-or-more "documents" per call — mirrors
+    how liveSend()/docSend() in web/index.html already call this one at a
+    time, so there's no need to support a mixed audio+documents request."""
+    content_type = request.headers.get("content-type", "")
+    if not content_type.startswith("multipart/form-data"):
+        raise HTTPException(400, "/capture requires multipart/form-data")
+
+    form = await request.form()
+    tmp_paths = []
+    try:
+        upload = form.get("audio")
+        if upload is not None:
+            suffix = Path(getattr(upload, "filename", "") or "").suffix or ".webm"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(await upload.read())
+                audio_tmp_path = Path(tmp.name)
+            tmp_paths.append(audio_tmp_path)
+            language_code = form.get("language_code") or "hi-IN"
+            try:
+                stt_result = await run_in_threadpool(
+                    capture.transcribe, str(audio_tmp_path), language_code=language_code)
+            except Exception as e:
+                raise HTTPException(502, f"transcription failed: {e}")
+            transcript = stt_result["transcript"]
+            result = {"transcript": transcript}
+            if transcript.strip() and language_code != "en-IN":
+                try:
+                    result["transcript_en"] = await run_in_threadpool(
+                        capture.translate, transcript,
+                        source_language_code=language_code, target_language_code="en-IN")
+                except Exception:
+                    pass
+            return result
+
+        doc_uploads = form.getlist("documents")
+        if doc_uploads:
+            scanned_documents = []
+            for doc_upload in doc_uploads:
+                name = getattr(doc_upload, "filename", "") or "document"
+                suffix = Path(name).suffix or ".jpg"
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(await doc_upload.read())
+                    doc_tmp_path = Path(tmp.name)
+                tmp_paths.append(doc_tmp_path)
+                try:
+                    text = (await run_in_threadpool(capture.read_image, str(doc_tmp_path)))["text"]
+                except Exception as e:
+                    raise HTTPException(502, f"document scan failed for {name}: {e}")
+                scanned_documents.append({"name": name, "chars": len(text), "text": text})
+            return {"scanned_documents": scanned_documents}
+
+        raise HTTPException(400, "/capture requires an 'audio' file or 'documents' files")
+    finally:
+        for p in tmp_paths:
+            p.unlink(missing_ok=True)
 
 
 @app.post("/analyze")

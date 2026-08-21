@@ -600,13 +600,12 @@ function paintPatientBar(){
 })();
 
 // ===================================================================
-// Live recording — an ADDITIONAL input path, independent of the scripted
-// mock_hi-IN step-through above. Records real mic audio with MediaRecorder,
-// lets the professional replay it before sending, then uploads it to
-// /assess as multipart/form-data (main.py branches on content-type: JSON
-// body -> existing audio_paths flow unchanged, multipart -> this new
-// upload flow, see main.py's assess()). Deliberately does not touch
-// STAGES/tx/render()/reset() — its own status line ($('live-result')) is
+// Live recording. Records real mic audio with MediaRecorder, lets the
+// professional replay it before sending, then uploads it to POST /capture
+// (STT only — no extract()/engine.assess() call; runAnalyze() below fires
+// separately to recompute the panels from the accumulated transcript, so
+// one recording burns exactly one STT call plus one extraction call, not
+// two extraction calls). Its own status line ($('live-result')) is
 // the only place its output goes.
 // ===================================================================
 let liveStream=null, liveRecorder=null, liveChunks=[], liveBlob=null;
@@ -666,13 +665,13 @@ async function liveSend(){
   const prevText=btn.textContent;
   btn.textContent='Transcribing…';
   $('live-result').style.display='block';
-  $('live-result').textContent='Uploading and running the live pipeline (STT → extract → engine)…';
+  $('live-result').textContent='Uploading and transcribing…';
   try{
     const fd=new FormData();
     const ext=(liveBlob.type||'').includes('ogg')?'ogg':'webm';
     fd.append('audio', liveBlob, 'live_recording.'+ext);
     fd.append('language_code', (SETUP && SETUP.languageCode) || 'hi-IN');
-    const res=await fetch('/assess', {method:'POST', body: fd});
+    const res=await fetch('/capture', {method:'POST', body: fd});
     const data=await res.json().catch(()=>({}));
     if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
     // Same visual format as the scripted UTT/Q_ASK/Q_ANS lines above (utt()
@@ -711,8 +710,9 @@ $('live-send').onclick=liveSend;
 // Patient-supplied records — an ADDITIONAL input path into the SAME
 // "Patient-supplied records" panel the scripted flow's step 3 already
 // fills with the hardcoded blister-strip chips. Real uploads run through
-// capture.read_image() per file (main.py's multipart /assess branch,
-// "documents" field), get combined into one doc_text, and come back as
+// capture.read_image() per file (main.py's POST /capture, "documents"
+// field — OCR only; runAnalyze() below does the extract+engine pass once
+// over the accumulated text), get combined into one doc_text, and come back as
 // "scanned_documents" (filename + extracted-char-count) — rendered here
 // with the exact .doc/.thumb/.docmeta/.chip markup step===3 uses, so a
 // real scan looks like it belongs in the same panel as the demo's. There
@@ -767,12 +767,11 @@ async function docSend(){
   const prevText=btn.textContent;
   btn.textContent='Scanning…';
   $('doc-result').style.display='block';
-  $('doc-result').textContent='Uploading '+docFiles.length+' file(s) and running OCR/vision + extraction…';
+  $('doc-result').textContent='Uploading '+docFiles.length+' file(s) and running OCR/vision…';
   try{
     const fd=new FormData();
     docFiles.forEach(f=>fd.append('documents', f, f.name));
-    fd.append('language_code', (SETUP && SETUP.languageCode) || 'hi-IN');
-    const res=await fetch('/assess', {method:'POST', body: fd});
+    const res=await fetch('/capture', {method:'POST', body: fd});
     const data=await res.json().catch(()=>({}));
     if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
     renderScannedDocs(data.scanned_documents || []);
