@@ -104,6 +104,7 @@ Usage:
     evidence = extract(transcript_text, doc_text)
     # -> {"E_66": True, "E_100": True, "E_55=V_101": True, "E_91": False, ...}
 """
+import hashlib
 import json
 import os
 import time
@@ -120,13 +121,38 @@ MODEL = os.environ.get("SARVAM_CHAT_MODEL", "sarvam-105b")
 # ^ Not sarvam-105b-conversations — that variant is tuned for real-time
 # voice turns, not one-shot structured extraction over a 223-code catalog.
 
+# Same disk-cache pattern as capture.py's STT/OCR results (hash of the
+# real call inputs -> cached JSON), extended here to extraction. Before
+# this, extract() had NO cache at all — every /analyze call, including
+# re-running the exact same transcript twice (a UI retry, an eval script
+# iterating on the same test case) burned a fresh Sarvam call. temperature
+# and seed aren't in the hash: extract() always passes the same fixed
+# 0.0/0, so they can't vary the result; MODEL is included because
+# SARVAM_CHAT_MODEL is env-overridable and a different model deserves a
+# different cache entry.
+CACHE_DIR = Path("cache")
+CACHE_DIR.mkdir(exist_ok=True)
+
+
+def _hash(*parts):
+    h = hashlib.sha256()
+    for p in parts:
+        h.update(p if isinstance(p, bytes) else str(p).encode())
+    return h.hexdigest()[:24]
+
+
 _client = None
 
 
 def _client_singleton():
     global _client
     if _client is None:
-        _client = SarvamAI(api_subscription_key=os.environ["SARVAM_API_KEY"], timeout=90.0)
+        # timeout=60.0, not the original 90.0: real observed successful
+        # calls have run 32-50s (measured directly, not estimated), so 60s
+        # still gives headroom above that before treating a call as dead.
+        # Paired with max_retries=3 below, not the original 5 — see that
+        # function's docstring for the worst-case-latency math this fixes.
+        _client = SarvamAI(api_subscription_key=os.environ["SARVAM_API_KEY"], timeout=60.0)
     return _client
 
 
@@ -141,11 +167,20 @@ class _ToolCallMissing(Exception):
     retryable, not a hard failure on the first occurrence."""
 
 
-def _with_retry(fn, *args, max_retries=5, **kwargs):
+def _with_retry(fn, *args, max_retries=3, **kwargs):
     """Retries on 429/5xx and on a forced-tool-call response coming back
     without a tool_calls entry (see _ToolCallMissing) — the same
     transient-failure shape seen on every provider this project has used
     so far (Sarvam's own STT/vision calls in capture.py, Gemini, Groq).
+
+    max_retries=3, not the original 5, and the client timeout above is
+    60s, not 90s: with the old numbers, a genuinely-down Sarvam (not
+    flaky-once, actually down) made a single extract() call retry for up
+    to 5 * 90s of timeouts plus 2+4+8+16=30s of backoff sleep between them
+    — near 8 minutes before finally raising, inside a 2-minute consult.
+    3 * 60s + 2+4=6s of backoff is a ~3 minute worst case: still enough
+    retries to ride out a real transient blip, but fails fast enough to
+    fall back to something else instead of the whole demo silently hanging.
 
     If the caller passed a fixed `seed` (extract() does, for reproducible
     evidence extraction), every RETRY bumps it by the attempt number.
@@ -325,6 +360,10 @@ def extract(transcript, doc_text=""):
             lines.append(f"{speaker}: {text}")
         transcript = "\n".join(lines)
 
+    cpath = CACHE_DIR / f"extract_{_hash(MODEL, transcript, doc_text)}.json"
+    if cpath.exists():
+        return json.loads(cpath.read_text(encoding="utf-8"))
+
     catalog = _load_catalog()
     client = _client_singleton()
 
@@ -374,6 +413,8 @@ def extract(transcript, doc_text=""):
         evidence[key] = True
     for item in parsed.get("absent", []):
         evidence[item["code"]] = False
+
+    cpath.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
     return evidence
 
 

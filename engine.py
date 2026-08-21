@@ -187,8 +187,30 @@ class Engine:
         resolves my uncertainty in general" — value of information, not raw
         information gain. It is the right objective for this product and it
         is the answer to give when a judge pushes on the maths.
+
+        `asked` is keyed by PARENT code, not raw feature id. A categorical/
+        multi-choice code (E_57 "where does it radiate", C/M type) flattens
+        into ~165 value features (E_57=V_123, E_57=V_14, ...) with no bare
+        "E_57" feature at all — confirmed directly against counts.npz, not
+        assumed. A denial of the whole question ("no, it doesn't radiate
+        anywhere") has no single value to attach to, so extract.py records
+        it as the bare parent code {"E_57": False}. Matching evidence keys
+        straight against self._fidx (as this used to) silently drops that
+        key — not in _fidx, so posterior() also ignores it, which is
+        correct-ish on its own — but it ALSO never landed in `asked`,
+        so E_57=V_123 kept coming back as the top question forever no
+        matter how many times the patient denied it. Confirmed live
+        2026-08-22: reported as "stuck on the first question," reproduced
+        by feeding the exact same denial twice and watching best_question
+        return the identical id both times. Binary codes are unaffected —
+        self.parents[j] == the feature's own name for those, so this is a
+        strict superset of the old behavior, not a change for them.
         """
-        asked = {self._fidx[f] for f in evidence if f in self._fidx}
+        asked_parents = {k.split('=', 1)[0] for k in evidence}
+        if self.parents:
+            asked = {j for j, p in enumerate(self.parents) if p in asked_parents}
+        else:
+            asked = {self._fidx[f] for f in evidence if f in self._fidx}
         sv = np.array([self.sev(p) for p in self.pathologies], dtype=float)
         c = np.clip(self.cond, EPS, 1 - EPS)          # (P, F)
 

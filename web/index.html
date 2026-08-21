@@ -456,7 +456,13 @@ const GATE_MSG=`<div class="empty locked">Waiting for a live recording or docume
 // abstain.
 function paintDX(){
   if(!committed || !hasLiveInput){ $('dx').innerHTML=GATE_MSG; $('dxtag').textContent=''; return; }
-  if(!dxState) return;
+  // Gate open but no /analyze has ever completed yet (still in flight, or
+  // one just got aborted/failed before any prior success) -- clear the
+  // tag rather than leaving whatever runAnalyze() set it to (e.g.
+  // "recalculating…") stuck with nothing behind it. Confirmed live
+  // 2026-08-22: a hung first call left this tag frozen with dxState still
+  // null even after the hang's own recovery path ran.
+  if(!dxState){ $('dxtag').textContent=''; return; }
   if(dxState.stage.abstaining){
     $('dx').innerHTML=`<div class="empty">${dxState.stage.message || 'Insufficient information to rank.'}</div>`;
     $('dxtag').textContent='';
@@ -468,7 +474,7 @@ function paintDX(){
 }
 function paintCM(){
   if(!committed || !hasLiveInput){ $('cm').innerHTML=GATE_MSG; $('cmtag').textContent=''; return; }
-  if(!cmState) return;
+  if(!cmState){ $('cmtag').textContent=''; return; }
   if(cmState.stage.abstaining){
     $('cm').innerHTML=`<div class="empty">${cmState.stage.message || 'Insufficient information to rank.'}</div>`;
     $('cmtag').textContent=cmState.tag || 'ranked by P × harm-if-missed';
@@ -476,6 +482,48 @@ function paintCM(){
   }
   $('cm').innerHTML=cmHtml(toCM(cmState.stage),true);
   $('cmtag').textContent=cmState.tag || 'ranked by P × harm-if-missed';
+}
+// Highest-Value Question and Doesn't Fit used to paint from ANY /analyze
+// response regardless of the reveal gate — engine.py computes
+// best_question independent of the abstain flag (there's real value in
+// "what to ask first" before any evidence exists), but the frontend gave
+// no visual cue that a zero-evidence question is a generic default, not
+// something derived from what was just uploaded. Confirmed confusing in
+// practice: an irrelevant image (a game screenshot) still produced a
+// specific-looking question like "Does the pain radiate to another
+// location?" tied to a named pathology, with nothing behind it. Locked
+// the same way as paintDX/paintCM until committed+hasLiveInput.
+//
+// Below that gate, this does NOT simply mirror the abstain message the
+// way paintDX/paintCM do — confirmed a real, self-referential bug live
+// 2026-08-22: the abstain message itself reads "ask the questions
+// below," but if this panel ALSO just showed that same sentence there
+// was no question anywhere to ask. engine.assess()'s message is written
+// assuming this panel always shows a real question — that's still true
+// and still safe as long as SOME real evidence exists (best_question is
+// then informed by that evidence, just not enough of it yet to rank a
+// full differential). Only when evidence is truly empty ({}) — the
+// original irrelevant-input case — does showing a question mean showing
+// the pure-prior default with nothing behind it, so that's the only
+// case that still shows the abstain message instead.
+function paintQB(){
+  if(!committed || !hasLiveInput){ $('qbody').innerHTML=GATE_MSG; $('igtag').textContent=''; return; }
+  if(!dxState){ $('igtag').textContent=''; return; }
+  const hasEvidence=dxState.stage._evidence && Object.keys(dxState.stage._evidence).length>0;
+  if(dxState.stage.abstaining && !hasEvidence){
+    $('qbody').innerHTML=`<div class="empty">${dxState.stage.message || 'Insufficient information to rank.'}</div>`;
+    $('igtag').textContent='';
+    return;
+  }
+  const qb=toQBODY(dxState.stage);
+  if(qb){ $('qbody').innerHTML=qb.html; $('igtag').textContent='IG '+qb.ig.toFixed(3)+' bit'; }
+  else { $('qbody').innerHTML='<div class="empty">No remaining question changes management.</div>'; $('igtag').textContent=''; }
+}
+function paintMIS(){
+  if(!committed || !hasLiveInput){ $('mis').innerHTML=GATE_MSG; return; }
+  if(!dxState) return;
+  $('mis').innerHTML = dxState.stage.abstaining ? '<div class="empty">—</div>'
+    : toMIS(dxState.stage).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('') || '<div class="empty">—</div>';
 }
 
 // ===================================================================
@@ -501,24 +549,55 @@ async function runAnalyze(){
   if(analyzeInFlight){ analyzeQueued=true; return; }
   if(!liveTranscriptExtra && !liveDocTextExtra) return;   // nothing to analyze yet
   analyzeInFlight=true;
+  // Extraction is a real Sarvam call, typically 15-60s — once the gate is
+  // already open, a stale panel with no indication anything is happening
+  // reads as broken, not slow. Only bother once there's something on
+  // screen to look stale in the first place.
+  if(committed && hasLiveInput){
+    $('cmtag').textContent='recalculating…'; $('dxtag').textContent='recalculating…';
+  }
+  // A dropped/hung connection (server restart mid-request, a flaky proxy,
+  // anything) leaves fetch() neither resolving nor rejecting — confirmed
+  // live 2026-08-22, a server restart mid-request froze analyzeInFlight
+  // true forever, which makes every later scheduleAnalyze() a silent no-op
+  // (it just re-queues against a call that will never finish) — permanent
+  // freeze with no recovery short of a page reload. 75s is comfortably
+  // above extract.py's own 60s Sarvam timeout plus its retry backoff, so
+  // this only fires for a connection that's genuinely gone, not a real
+  // slow-but-alive call.
+  const abort=new AbortController();
+  const abortTimer=setTimeout(()=>abort.abort(), 75000);
   try{
     const res=await fetch('/analyze', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({transcript: liveTranscriptExtra, doc_text: liveDocTextExtra, actions_taken: []}),
+      signal: abort.signal,
     });
     const data=await res.json().catch(()=>null);
     if(res.ok && data){
       dxState={stage:data, prevStage:dxState?dxState.stage:undefined};
       cmState={stage:data, tag:'live update · naive bayes'};
-      paintDX(); paintCM();
-      const qb=toQBODY(data);
-      if(qb){ $('qbody').innerHTML=qb.html; $('igtag').textContent='IG '+qb.ig.toFixed(3)+' bit'; }
-      else { $('qbody').innerHTML='<div class="empty">No remaining question changes management.</div>'; $('igtag').textContent=''; }
-      $('mis').innerHTML = data.abstaining ? '<div class="empty">—</div>'
-        : toMIS(data).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('') || '<div class="empty">—</div>';
     }
-  }catch(e){ /* best-effort — a failed live recompute leaves the last good state on screen */ }
+    // Either branch repaints from whatever dxState/cmState currently hold.
+    // On success that's the fresh data just assigned above; on a non-2xx
+    // response (fetch() does NOT throw for a 502 -- only a network-level
+    // failure lands in the catch below) it's the last good state, which
+    // is what actually clears the "recalculating…" tags set above. Without
+    // this else, a real /analyze 502 left Can't-Miss/Differential frozen
+    // on "recalculating…" forever — confirmed live 2026-08-22, not
+    // hypothetical: the extraction retry/timeout tightened earlier this
+    // session (max_retries 5->3, timeout 90s->60s) makes a genuinely slow
+    // Sarvam response now surface as a real 502 instead of eventually
+    // succeeding after ~8 minutes, so this path needed to stop lying about
+    // work still being in progress.
+    paintDX(); paintCM(); paintQB(); paintMIS();
+  }catch(e){
+    // Network-level failure, OR the abort firing (AbortError) — same
+    // revert either way, nothing new to paint.
+    paintDX(); paintCM(); paintQB(); paintMIS();
+  }
   finally{
+    clearTimeout(abortTimer);
     analyzeInFlight=false;
     if(analyzeQueued){ analyzeQueued=false; scheduleAnalyze(); }
   }
@@ -532,7 +611,7 @@ function commitImpression(){
   if(!text) return;
   committed=true;
   $('dnote-commit').textContent='Committed '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  paintDX(); paintCM();
+  paintDX(); paintCM(); paintQB(); paintMIS();
 }
 $('dnote-commit').onclick=commitImpression;
 $('dnote-input').addEventListener('input',()=>{
@@ -559,9 +638,9 @@ function reset(){
   $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
   $('docn').textContent='0 scanned';$('mode').textContent='idle';
   $('cm').innerHTML=GATE_MSG;
-  $('qbody').innerHTML='<div class="empty">Posterior too flat to discriminate.</div>';
+  $('qbody').innerHTML=GATE_MSG;
   $('igtag').textContent='';$('cmtag').textContent='';
-  $('dx').innerHTML=GATE_MSG;$('mis').innerHTML='<div class="empty">—</div>';$('dxtag').textContent='';
+  $('dx').innerHTML=GATE_MSG;$('mis').innerHTML=GATE_MSG;$('dxtag').textContent='';
   ['s-stt','s-vis'].forEach(i=>svc(i,0));
 }
 $('new-consult').onclick=()=>{
@@ -665,7 +744,7 @@ async function liveSend(){
   const prevText=btn.textContent;
   btn.textContent='Transcribing…';
   $('live-result').style.display='block';
-  $('live-result').textContent='Uploading and transcribing…';
+  $('live-result').textContent='Uploading and transcribing — usually 15-60s, real speech-to-text, not instant…';
   try{
     const fd=new FormData();
     const ext=(liveBlob.type||'').includes('ogg')?'ogg':'webm';
@@ -767,7 +846,7 @@ async function docSend(){
   const prevText=btn.textContent;
   btn.textContent='Scanning…';
   $('doc-result').style.display='block';
-  $('doc-result').textContent='Uploading '+docFiles.length+' file(s) and running OCR/vision…';
+  $('doc-result').textContent='Uploading '+docFiles.length+' file(s) and running OCR/vision — usually 15-60s…';
   try{
     const fd=new FormData();
     docFiles.forEach(f=>fd.append('documents', f, f.name));

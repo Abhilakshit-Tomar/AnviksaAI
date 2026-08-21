@@ -108,7 +108,9 @@ Usage:
     python main.py --port 8080
 """
 import argparse
+import asyncio
 import json
+import traceback
 import os
 import sys
 import tempfile
@@ -348,6 +350,12 @@ async def capture_only(request: Request):
                 stt_result = await run_in_threadpool(
                     capture.transcribe, str(audio_tmp_path), language_code=language_code)
             except Exception as e:
+                # Temporary diagnostic: a real /capture 502 was reported live
+                # 2026-08-22 with no way to see WHY from the access log alone
+                # (a caught exception -> HTTPException never prints a
+                # traceback). Printed here, not raised further, so it stays
+                # in server stdout/stderr for whoever's watching the process.
+                traceback.print_exc()
                 raise HTTPException(502, f"transcription failed: {e}")
             transcript = stt_result["transcript"]
             result = {"transcript": transcript}
@@ -362,7 +370,7 @@ async def capture_only(request: Request):
 
         doc_uploads = form.getlist("documents")
         if doc_uploads:
-            scanned_documents = []
+            docs_meta = []
             for doc_upload in doc_uploads:
                 name = getattr(doc_upload, "filename", "") or "document"
                 suffix = Path(name).suffix or ".jpg"
@@ -370,11 +378,30 @@ async def capture_only(request: Request):
                     tmp.write(await doc_upload.read())
                     doc_tmp_path = Path(tmp.name)
                 tmp_paths.append(doc_tmp_path)
+                docs_meta.append((name, doc_tmp_path))
+
+            # OCR every document CONCURRENTLY, not one at a time -- these
+            # are independent Sarvam vision calls, so a doctor uploading
+            # 3 records at once was paying 3x the wall time for no reason.
+            # CLAUDE.md's 10-30 req/min vision cap is a per-MINUTE ceiling
+            # on a demo-sized handful of documents in one request; it's
+            # the "render loop" (re-scanning on every repaint) that
+            # warning is actually about, not a single batched upload.
+            async def _scan(name, path):
                 try:
-                    text = (await run_in_threadpool(capture.read_image, str(doc_tmp_path)))["text"]
+                    result = await run_in_threadpool(capture.read_image, str(path))
                 except Exception as e:
-                    raise HTTPException(502, f"document scan failed for {name}: {e}")
-                scanned_documents.append({"name": name, "chars": len(text), "text": text})
+                    raise RuntimeError(f"{name}: {e}") from e
+                return name, result["text"]
+
+            try:
+                results = await asyncio.gather(*[_scan(n, p) for n, p in docs_meta])
+            except Exception as e:
+                traceback.print_exc()
+                raise HTTPException(502, f"document scan failed for {e}")
+
+            scanned_documents = [{"name": name, "chars": len(text), "text": text}
+                                  for name, text in results]
             return {"scanned_documents": scanned_documents}
 
         raise HTTPException(400, "/capture requires an 'audio' file or 'documents' files")
@@ -395,6 +422,7 @@ def analyze(req: AnalyzeRequest):
     try:
         evidence = extract.extract(req.transcript, req.doc_text)
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(502, f"evidence extraction failed: {e}")
     payload = get_engine().assess(evidence, actions_taken=req.actions_taken)
     payload["_evidence"] = evidence
