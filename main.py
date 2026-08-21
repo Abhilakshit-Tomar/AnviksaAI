@@ -103,6 +103,7 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -111,6 +112,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 import capture
 import extract
@@ -347,7 +349,15 @@ async def assess(request: Request):
                 raise HTTPException(400, "multipart /assess requires an 'audio' file and/or 'documents' files")
 
             actions_raw = form.get("actions_taken")
-            payload = _run_assessment(
+            # run_in_threadpool, not a direct call: _run_assessment is plain
+            # synchronous blocking code (Sarvam/extract calls, 10-90s each)
+            # -- called directly from this async handler, it froze uvicorn's
+            # entire event loop for that whole duration, refusing even NEW
+            # incoming connections. Confirmed live 2026-08-21: the third of
+            # three sequential /assess calls got net::ERR_CONNECTION_REFUSED
+            # while the second was still blocking the loop.
+            payload = await run_in_threadpool(
+                _run_assessment,
                 audio_paths=audio_paths,
                 documents=documents,
                 actions_taken=(json.loads(actions_raw) if actions_raw else []),
@@ -362,7 +372,8 @@ async def assess(request: Request):
             except Exception as e:
                 raise HTTPException(422, f"invalid /assess JSON body: {e}")
             documents = [{"path": req.image_path, "name": Path(req.image_path).name}] if req.image_path else []
-            payload = _run_assessment(
+            payload = await run_in_threadpool(
+                _run_assessment,
                 audio_paths=req.audio_paths,
                 documents=documents,
                 actions_taken=req.actions_taken,
@@ -427,7 +438,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--offline", action="store_true",
                      help="replay demo/offline_response.json, no API calls at all")
-    ap.add_argument("--port", type=int, default=8000)
+    # PORT env var is the convention hosting platforms (Render, Railway, ...)
+    # inject and expect the app to bind to — --port still overrides it for
+    # local runs. --host defaults to 0.0.0.0 (not 127.0.0.1) because a
+    # loopback-only bind is unreachable from outside the container on any
+    # of those platforms; harmless for local dev too, since localhost still
+    # resolves to it.
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
+    ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
     _offline = args.offline
 
@@ -437,6 +455,6 @@ if __name__ == "__main__":
               f"file's module docstring.")
 
     import uvicorn
-    print(f"Serving on http://127.0.0.1:{args.port}/web/  "
+    print(f"Serving on http://{args.host}:{args.port}/web/  "
           f"({'OFFLINE — no API calls' if _offline else 'LIVE'})")
-    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port)

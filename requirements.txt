@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+python-dotenv
+sarvamai
+httpx
+numpy
+pandas
+pyyaml
+pillow

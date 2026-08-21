@@ -69,13 +69,15 @@ thresholds, `abstain_entropy`.
 
 - **No chat interface.** Ever. It's the tell that this is a GPT wrapper, and
   nobody prompts anything during a 2-minute consult.
-- **No commit gate (reversed 2026-08-21).** Differential and Can't-Miss are
-  always visible and update live as evidence arrives — no anchoring-bias
-  lock tied to the doctor's note. The note is a free-standing, always-
-  editable record the clinician can write and revise anytime; committing it
-  has no effect on what the panels show. This was a deliberate product
-  reversal, made explicitly aware it drops the tool's original anchoring-
-  bias mitigation — not an oversight.
+- **The reveal gate (restored 2026-08-21, in a new shape).** Differential
+  and Can't-Miss stay hidden until BOTH: the clinician has committed a
+  note, AND at least one REAL live input has happened — a live recording
+  sent, or a document uploaded and scanned (either one satisfies it, not
+  both required). The scripted STAGES walkthrough alone, no matter how far
+  it's progressed, never reveals anything by itself — only genuine
+  captured evidence plus a real commit does. This briefly went through a
+  no-gate phase the same day; both changes were deliberate, explicit
+  product decisions made in conversation, not oversights.
 - Print the arithmetic on screen (`0.096 × 100`) under each risk score.
 - Abstain visibly when the posterior is flat rather than guessing.
 

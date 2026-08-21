@@ -201,11 +201,8 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
     <div class="svc">
       <span id="s-stt"><i></i>saaras-v3</span>
       <span id="s-vis"><i></i>sarvam-vision</span>
-      <span id="s-tts"><i></i>bulbul-v3</span>
     </div>
-    <div class="step" id="stepn">00 / 08</div>
-    <button id="back">←</button>
-    <button class="primary" id="next">Start consultation</button>
+    <button id="new-consult">New consultation</button>
   </div>
 
   <div class="cols">
@@ -270,14 +267,10 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
         <div class="h"><h2>Differential</h2><span class="tag" id="dxtag"></span></div>
         <div id="dx"><div class="empty">—</div></div>
       </div>
-      <div class="card scroll hide" id="notecard" style="flex:0 0 auto;max-height:40%">
-        <div class="h"><h2>For the record</h2><span class="tag">copy →</span></div>
-        <div class="note" id="snip"></div>
-      </div>
     </div>
   </div>
 
-  <div class="hint"><kbd>space</kbd> or <kbd>→</kbd> advance · <kbd>←</kbd> back · <kbd>R</kbd> reset — advance manually while you narrate</div>
+  <div class="hint">Record or upload real evidence, write your impression, and commit it — the panels update live as evidence comes in.</div>
   <div class="hint" style="opacity:.6">Decision support only. Not a medical device. Not for clinical use.</div>
 </div>
 
@@ -297,33 +290,19 @@ const ICON_MIS='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strok
 const ICON_PLAY='<svg viewBox="0 0 16 16" fill="currentColor" style="width:9px;height:9px;display:block"><path d="M4 2.3v11.4a.6.6 0 0 0 .92.5l9-5.7a.6.6 0 0 0 0-1l-9-5.7a.6.6 0 0 0-.92.5Z"/></svg>';
 
 // ===================================================================
-// Differential, Can't-Miss, Doesn't Fit and the question card are built
-// from THREE LIVE POST /assess calls (main.py -> capture.py -> extract.py
-// -> engine.py, real Sarvam STT/vision + Gemini extraction + real engine
-// output over 1,025,602 DDXPlus records) — not a pre-generated
-// contract.json anymore. Each call replays the demo's real mock audio
-// (demo/mock_hi-IN/) and the blister-strip photo, mirroring the three
-// evidence stages demo_case.py's STAGES[1:4] hand-built for the static
-// version: pill-strip + travel, + the calf-swelling answer, + the
-// ordered tests (which trigger PE's exclusion gate).
-//
-// Nothing under STAGES below is hand-typed; the functions further down
-// (toBars/toCM/toMIS/toQBODY) only reformat what the engine returned.
-// The transcript lines, doc-scan chips, doctor's note and closing note
-// snippet ARE still hand-authored demo content — engine.py has no
-// opinion on Hindi phrasing or clinical note prose, so those stay as
-// scripted constants driving the step choreography independently of
-// the live STAGES data.
+// Differential, Can't-Miss, Doesn't Fit and the Highest-Value Question are
+// built from POST /analyze (extract.py -> engine.py, real Sarvam
+// extraction + real engine output over 1,025,602 DDXPlus records),
+// triggered every time real live evidence changes — a recording sent, a
+// document scanned. There is no scripted narrative anymore: the functions
+// below (toBars/toCM/toMIS/toQBODY) only reformat what the engine
+// actually returned for whatever the clinician has actually captured.
 // ===================================================================
-let STAGES = null;      // [stage "2 + pill strip + travel", stage "3 + calf", stage "4 + tests"]
-let LOAD_ERROR = null;
 
 // bulbul-v3's full TTS voice set — 11 languages, a SUBSET of saaras-v3 STT's
-// 23. Deliberately not the wider STT list: any language without a bulbul-v3
-// voice could never speak best_question aloud at the "ask this aloud" step,
-// so offering it in this dropdown would just be a language that silently
-// can't do half of what the demo does. `native` is used in the header bar;
-// `label` is the dropdown's own display text.
+// 23 — used only to populate the language dropdown so it can't drift out of
+// sync with what the STT/TTS pipeline actually supports. `native` is used
+// in the header bar; `label` is the dropdown's own display text.
 const LANGUAGES=[
   {code:'hi-IN',label:'Hindi',native:'हिंदी'},
   {code:'bn-IN',label:'Bengali',native:'বাংলা'},
@@ -344,57 +323,6 @@ const LANGUAGES=[
 // it's part of that call's body.
 let SETUP = null; // {name, age, gender, caseId, languageCode}
 
-async function loadContract(languageCode){
-  const AUDIO_DIR = 'demo/mock_hi-IN/';
-  const LINES = ['mock_line_00_patient.wav', 'mock_line_01_patient.wav',
-                  'mock_line_02_doctor.wav', 'mock_line_03_patient.wav',
-                  'mock_line_04_patient.wav'];
-  const IMAGE = AUDIO_DIR + 'mock_blister_strip.png';
-  const path = f => AUDIO_DIR + f;
-  // These audio_paths/image_path are resolved server-side by main.py
-  // (Path(p).exists()), not fetched by the browser — they must be valid
-  // relative to the directory main.py itself is run from (the repo root).
-  //
-  // NOTE: the actual recorded audio under demo/mock_hi-IN/ is spoken Hindi
-  // regardless of which language is selected here — there's no re-recorded
-  // set per language. Selecting a non-Hindi language still sends that same
-  // Hindi audio to saaras-v3 with a different language_code hint, which
-  // main.py doesn't crash on, but the transcript it gets back for anything
-  // but hi-IN is not expected to be accurate — only the Hindi path is
-  // actually rehearsed/verified end-to-end.
-  const CALLS = [
-    {audio_paths: LINES.slice(0, 4).map(path), image_path: IMAGE, actions_taken: [], language_code: languageCode},
-    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: [], language_code: languageCode},
-    {audio_paths: LINES.map(path), image_path: IMAGE, actions_taken: ['ecg', 'troponin', 'd_dimer'], language_code: languageCode},
-  ];
-  const callOne = async body => {
-    const res = await fetch('/assess', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
-    if(!res.ok){
-      const err = await res.json().catch(()=>({detail: 'HTTP '+res.status}));
-      throw new Error(err.detail || ('HTTP '+res.status));
-    }
-    return res.json();
-  };
-  try{
-    // Sequential, deliberately NOT Promise.all — measured both ways live.
-    // Firing all three at once made the *total* wait longer (8.9s sequential
-    // vs 12-24s parallel across two runs), not shorter: the three calls share
-    // overlapping audio files and the same blister-strip image, so going
-    // concurrent triples up simultaneous hits on Sarvam's STT/vision (vision
-    // alone is capped at 10-30 req/min per CLAUDE.md) and each call slows
-    // down under that contention more than the client saves by not queueing.
-    const stages = [];
-    for(const body of CALLS) stages.push(await callOne(body));
-    STAGES = stages;
-  }catch(e){
-    LOAD_ERROR = e.message;
-  }
-}
-
 // -------- pure formatting: engine JSON -> DOM inputs. No clinical text is invented here. --------
 function toBars(stage){
   return stage.differential.map(d=>[d.name, +(d.p*100).toFixed(1)]);
@@ -414,82 +342,28 @@ function toMIS(stage){
     m.against ? m.text.split(m.against).join(`<b>${m.against}</b>`) : m.text);
 }
 
-// The hero narrative asks about calf swelling (E_151) and gets it
-// answered — the scripted transcript (Q_ASK/Q_ANS below) and stage 3's
-// evidence are both built around that. But E_151 is NOT the true #1
-// question at this stage by information gain; "surgery in the last
-// month?" (E_196) ranks higher. day-plan.md flagged this explicitly as a
-// decision to make deliberately, not discover on stage — this is that
-// decision, made in favour of the calf question so the rest of the demo
-// stays internally consistent. Set FOLLOW_QUESTION_ID to null to always
-// render the true #1 question instead (then the transcript needs a
-// rewrite to match).
-const FOLLOW_QUESTION_ID = 'E_151';
-// Only translations a human has actually reviewed go here (day-plan.md's
-// rule — originally "Get the Marathi checked by a native speaker", now
-// applies to Hindi since that's tonight's demo language). Any question
-// without an entry renders English-only rather than a guessed translation.
-//
-// UNVERIFIED: hand-written Hindi, not checked by a native speaker — same
-// caveat generate_mock_demo.py's Hindi lines carry. Matches the text
-// main.py sends to bulbul-v3 for this question's spoken audio (see
-// HINDI_QUESTIONS in main.py) — keep both in sync if this changes.
-const HINDI_Q = { E_151: 'क्या आपके शरीर में कहीं सूजन है?' };
-
-function pickQuestion(stage){
-  if(FOLLOW_QUESTION_ID && stage.best_question && stage.best_question.id!==FOLLOW_QUESTION_ID){
-    const alt=(stage.runners_up||[]).find(r=>r.id===FOLLOW_QUESTION_ID);
-    if(alt) return alt;
-  }
-  return stage.best_question;
-}
 function branchNote(p, diffTop){
   if(diffTop===undefined) return '';
   if(p>=diffTop) return 'top of differential';
   if(p<0.05) return 'drops off list';
   return '';
 }
-// Reflects what main.py actually spoke (question_audio_language /
-// question_audio_fallback on the stage payload), not the language the
-// professional picked — those can differ, since only hi-IN has a real
-// translation and everything else falls back to English audio. See
-// main.py's /assess docstring for the fallback rule this mirrors.
-function ttsLabel(stage){
-  const lang=stage.question_audio_language;
-  if(!lang) return 'bulbul-v3';
-  if(stage.question_audio_fallback) return 'bulbul-v3 · English (fallback — no translation for this language yet)';
-  const l=LANGUAGES.find(x=>x.code===lang);
-  return 'bulbul-v3 · '+(l?l.native:lang);
-}
 function toQBODY(stage){
-  const q=pickQuestion(stage);
+  const q=stage.best_question;
   if(!q) return null;
   // stage.differential is empty while the engine is abstaining (flat
   // posterior) — best_question can still exist in that state (engine.py
-  // computes it independently of the abstain gate), so this can't assume
-  // a non-empty differential the way the old hand-picked contract.json
-  // stages always had.
+  // computes it independently of the abstain gate).
   const diffTop=stage.differential.length?stage.differential[0].p:undefined;
-  // Gated on the SELECTED language, not just presence in HINDI_Q — that
-  // dict only ever holds Hindi text, so showing it as if it were the
-  // spoken caption for a different selected language (which actually gets
-  // the English fallback audio, see ttsLabel) would misrepresent what's
-  // playing.
-  const orig=(SETUP.languageCode==='hi-IN')?HINDI_Q[q.id]:null;
   const runners=(stage.runners_up||[]).filter(r=>r.id!==q.id).slice(0,3);
   const yn=(p)=>{const note=branchNote(p,diffTop);return (p*100).toFixed(1)+'%'+(note?` · ${note}`:'');};
   return {
     ig:q.ig,
     html:`
     <div class="q">${q.en}</div>
-    ${orig?`<div class="qo">${orig}</div>`:''}
     <div class="branches">
       <div class="br yes"><div class="l">IF YES</div><div class="v">${q.about} → <b>${yn(q.branches.yes)}</b></div></div>
       <div class="br no"><div class="l">IF NO</div><div class="v">${q.about} → <b>${yn(q.branches.no)}</b></div></div>
-    </div>
-    <div class="ask">
-      <button class="primary" id="askbtn">Ask this aloud</button>
-      <span class="speak" id="spk"><span class="wave"><i></i><i></i><i></i><i></i></span>${ttsLabel(stage)}</span>
     </div>
     <div class="alts">
       ${runners.map(r=>`<div class="alt"><span class="ig">${r.ig.toFixed(3)} bit</span><span>${r.en}</span></div>`).join('')}
@@ -497,42 +371,7 @@ function toQBODY(stage){
   };
 }
 
-// -------- hand-authored demo content: not engine output (see header note) --------
-const SNIP=`34F, chest tightness + dyspnoea x1d, sudden onset.
-On hormone therapy (per blister strip — not previously
-recorded). International travel 4 days ago. Unilateral
-left calf swelling on direct questioning.
-
-PE considered. D-dimer + CTPA ordered; ECG and troponin
-done. Panic attack less likely given the calf finding
-and the two unrecorded risk factors.`;
-
-// The real Hindi lines from demo/mock_hi-IN/mock_consult_lines.json — the
-// same audio files the live /assess calls above actually transcribe, not
-// a fresh translation. Line 3 (the E_16 affirmation — "haan, ghabraahat
-// si ho rahi hai") is the corrected version: the patient admits current
-// anxiety, unlike the earlier Marathi draft where she denied it outright.
-// English glosses are hand-written, not checked by a native speaker.
-// audioSrc points at the ACTUAL recorded file for each line (served by
-// main.py's /demo static mount) — real audio, not a re-synthesis, for the
-// four consult lines and the calf-swelling answer. Q_ASK has no audioSrc
-// here because it isn't a recording: it's AnviksaAI's own synthesized
-// voice, attached dynamically at the step-7 call site from the live
-// STAGES[0].question_audio_b64 (bulbul-v3 output). The step-9 doctor line
-// further down (order tests) gets no play button at all — it was never
-// recorded and isn't AnviksaAI's speech either, so there's no real audio
-// to attach without fabricating a "recording" that never happened.
-const UTT=[
- {w:'Patient',o:'छाती में भारीपन महसूस हो रहा है और सांस लेने में तकलीफ हो रही है।',e:"My chest feels heavy and I'm having trouble breathing.",audioSrc:'/demo/mock_hi-IN/mock_line_00_patient.wav'},
- {w:'Patient',o:'कल रात से। अचानक शुरू हुआ। दिल तेज़ धड़क रहा है।',e:'Since last night. It started suddenly. My heart is racing.',audioSrc:'/demo/mock_hi-IN/mock_line_01_patient.wav'},
- {w:'Doctor',o:'कोई टेंशन है क्या? घर में सब ठीक है ना?',e:'Any stress? Is everything alright at home?',audioSrc:'/demo/mock_hi-IN/mock_line_02_doctor.wav'},
- {w:'Patient',o:'हाँ, घबराहट सी हो रही है, पर घर में सब ठीक है। चार दिन पहले फ्लाइट से वापस आई।',e:"Yes, I've been feeling anxious, but everything's fine at home. I flew back four days ago.",audioSrc:'/demo/mock_hi-IN/mock_line_03_patient.wav'}];
-const Q_ASK={w:'AnviksaAI → patient',o:'क्या आपके शरीर में कहीं सूजन है?',e:'Do you have swelling anywhere on your body?',sys:1};
-const Q_ANS={w:'Patient',o:'हाँ, बाएं पैर की पिंडली में सूजन है।',e:'Yes, my left calf is swollen.',audioSrc:'/demo/mock_hi-IN/mock_line_04_patient.wav'};
-
 const $=id=>document.getElementById(id);
-let step=0;
-const STEPS=10;
 let currentAudio=null;
 
 // Shared by every play button — the per-line ones (real recorded audio,
@@ -598,18 +437,17 @@ function utt(u){
 }
 function svc(id,on){$(id).classList.toggle('on',on)}
 
-const LABELS=['Start consultation','Continue','Scan patient records','Record impression','Type your impression','Compute best question','Ask it aloud','Update posterior','Order ECG + troponin + d-dimer','Draft for record','Replay'];
-
 // ===================================================================
-// Differential and Can't-Miss paint the instant dxState/cmState changes —
-// no gate. CLAUDE.md originally required these held back until the
-// clinician committed their own note first (anchoring-bias mitigation);
-// that was a deliberate, explicit reversal on 2026-08-21, not an
-// oversight — see CLAUDE.md's UI rules for the record of that decision.
-// The doctor's note (commitImpression() below) is now a free-standing,
-// always-editable record with no effect on these panels.
+// Differential and Can't-Miss gate: reveal requires (1) the clinician has
+// committed a note AND (2) at least one REAL live input has happened — a
+// live recording sent, or a document uploaded and scanned. Either one
+// satisfies condition (2); both are not required. There is no scripted
+// narrative to gate against anymore — this is the only path to a reveal.
 // ===================================================================
 let dxState=null, cmState=null;
+let committed=false, hasLiveInput=false;
+
+const GATE_MSG=`<div class="empty locked">Waiting for a live recording or document upload, plus a committed note, before showing any diagnosis.</div>`;
 
 // CLAUDE.md: "Abstain visibly when the posterior is flat rather than
 // guessing." An abstaining stage has differential=[]/cant_miss=[] —
@@ -617,6 +455,7 @@ let dxState=null, cmState=null;
 // would silently go blank, which reads as broken, not as an intentional
 // abstain.
 function paintDX(){
+  if(!committed || !hasLiveInput){ $('dx').innerHTML=GATE_MSG; $('dxtag').textContent=''; return; }
   if(!dxState) return;
   if(dxState.stage.abstaining){
     $('dx').innerHTML=`<div class="empty">${dxState.stage.message || 'Insufficient information to rank.'}</div>`;
@@ -628,6 +467,7 @@ function paintDX(){
   $('dxtag').textContent='naive bayes · DDXPlus';
 }
 function paintCM(){
+  if(!committed || !hasLiveInput){ $('cm').innerHTML=GATE_MSG; $('cmtag').textContent=''; return; }
   if(!cmState) return;
   if(cmState.stage.abstaining){
     $('cm').innerHTML=`<div class="empty">${cmState.stage.message || 'Insufficient information to rank.'}</div>`;
@@ -639,20 +479,16 @@ function paintCM(){
 }
 
 // ===================================================================
-// Live evidence accumulator — the SAME dxState/cmState/paintDX/paintCM
-// above, just fed by real live input (mic recording, document upload)
-// instead of the scripted STAGES snapshots. Every time either panel picks
-// up new evidence, this recomputes Can't-Miss from the FULL picture
-// (scripted transcript/doc baseline the STAGES calls already established,
-// plus whatever's been recorded/uploaded live) via /analyze — extract +
-// engine only, no re-transcription/re-OCR of text already in hand.
+// Live evidence accumulator — dxState/cmState/paintDX/paintCM above are
+// fed entirely by real live input (mic recording, document upload) via
+// /analyze (extract.py + engine.py, no re-transcription/re-OCR of text
+// already in hand). Every time either panel picks up new evidence, this
+// recomputes Differential/Can't-Miss/Highest-Value Question/Doesn't Fit
+// from the FULL accumulated transcript + document text.
 //
 // Debounced (500ms of quiet) so a burst of live events — several
-// documents uploaded back to back, a recording finishing right as a
-// scripted step advances — collapses into ONE /analyze call with
-// everything folded in, not one call per event racing the others. No
-// gate to speak of anymore — paintDX/paintCM run unconditionally the
-// moment a response lands.
+// documents uploaded back to back — collapses into ONE /analyze call
+// with everything folded in, not one call per event racing the others.
 // ===================================================================
 let liveTranscriptExtra='', liveDocTextExtra='';
 let analyzeTimer=null, analyzeInFlight=false, analyzeQueued=false;
@@ -663,22 +499,23 @@ function scheduleAnalyze(){
 }
 async function runAnalyze(){
   if(analyzeInFlight){ analyzeQueued=true; return; }
-  if(!STAGES || !STAGES.length) return;   // no baseline yet to combine with
+  if(!liveTranscriptExtra && !liveDocTextExtra) return;   // nothing to analyze yet
   analyzeInFlight=true;
-  const base=STAGES[STAGES.length-1];
-  const transcript=(base.transcript||'') + (liveTranscriptExtra?('\n'+liveTranscriptExtra):'');
-  const docText=(base.scanned_documents||[]).map(d=>d.text).join('\n\n')
-              + (liveDocTextExtra?('\n\n'+liveDocTextExtra):'');
   try{
     const res=await fetch('/analyze', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({transcript, doc_text: docText, actions_taken: []}),
+      body: JSON.stringify({transcript: liveTranscriptExtra, doc_text: liveDocTextExtra, actions_taken: []}),
     });
     const data=await res.json().catch(()=>null);
     if(res.ok && data){
       dxState={stage:data, prevStage:dxState?dxState.stage:undefined};
       cmState={stage:data, tag:'live update · naive bayes'};
       paintDX(); paintCM();
+      const qb=toQBODY(data);
+      if(qb){ $('qbody').innerHTML=qb.html; $('igtag').textContent='IG '+qb.ig.toFixed(3)+' bit'; }
+      else { $('qbody').innerHTML='<div class="empty">No remaining question changes management.</div>'; $('igtag').textContent=''; }
+      $('mis').innerHTML = data.abstaining ? '<div class="empty">—</div>'
+        : toMIS(data).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('') || '<div class="empty">—</div>';
     }
   }catch(e){ /* best-effort — a failed live recompute leaves the last good state on screen */ }
   finally{
@@ -686,13 +523,16 @@ async function runAnalyze(){
     if(analyzeQueued){ analyzeQueued=false; scheduleAnalyze(); }
   }
 }
-// No gating effect — the doctor can commit, keep typing, and re-commit as
-// many times as they want. This only marks/timestamps the note for the
-// record; it never touches dxState/cmState/paintDX/paintCM.
+// The doctor can keep typing and re-commit as many times as they want —
+// commit is never a one-way lock on the textarea itself. It DOES set the
+// `committed` half of the reveal gate (paintDX/paintCM), alongside
+// hasLiveInput (set by liveSend()/docSend() below).
 function commitImpression(){
   const text=$('dnote-input').value.trim();
   if(!text) return;
+  committed=true;
   $('dnote-commit').textContent='Committed '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  paintDX(); paintCM();
 }
 $('dnote-commit').onclick=commitImpression;
 $('dnote-input').addEventListener('input',()=>{
@@ -703,100 +543,13 @@ $('dnote-input').addEventListener('keydown', e=>{
   if(e.key==='Enter' && (e.ctrlKey||e.metaKey)){ e.preventDefault(); commitImpression(); }
 });
 
-function render(){
-  $('stepn').textContent=String(step).padStart(2,'0')+' / '+STEPS;
-  $('next').textContent=LABELS[Math.min(step,10)];
-  $('back').disabled=step===0;
-
-  if(step>=1){svc('s-stt',1);$('mode').textContent='saaras-v3 · codemix · live';}
-  if(step>=3){svc('s-vis',1);}
-  if(step>=6){svc('s-tts',1);}
-
-  if(step===1){$('tx').innerHTML='';UTT.slice(0,2).forEach(utt);}
-  if(step===2){UTT.slice(2).forEach(utt);}
-  if(step===3){
-    $('docn').textContent='1 scanned';
-    $('docs').innerHTML=`<div class="doc"><div class="thumb"></div><div class="docmeta">
-      <div class="t">Blister strip · photographed at desk</div>
-      <span class="chip"><span class="k">RX</span> Ethinylestradiol 0.03mg</span>
-      <span class="chip"><span class="k">RX</span> Levonorgestrel 0.15mg</span>
-      <span class="chip new"><span class="k">E_100</span> currently taking hormones</span>
-    </div></div>`;
-  }
-  if(step===5){
-    dxState={stage:STAGES[0]};cmState={stage:STAGES[0]};
-    paintDX();paintCM();
-    $('mis').innerHTML=toMIS(STAGES[0]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
-  }
-  if(step===6){
-    const qb=toQBODY(STAGES[0]);
-    $('qbody').innerHTML=qb.html;$('igtag').textContent='IG '+qb.ig.toFixed(3)+' bit';bindAsk();
-  }
-  if(step===7){utt({...Q_ASK,audioB64:STAGES[0].question_audio_b64});}
-  if(step===8){
-    utt(Q_ANS);stopQuestionAudio();
-    dxState={stage:STAGES[1],prevStage:STAGES[0]};cmState={stage:STAGES[1]};
-    paintDX();paintCM();
-    $('mis').innerHTML=toMIS(STAGES[1]).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('');
-    $('qbody').innerHTML='<div class="empty">Answered. No remaining question changes management.</div>';
-    $('igtag').textContent='';
-  }
-  if(step===9){
-    // the panel must be able to FINISH. this is the alert-fatigue answer.
-    cmState={stage:STAGES[2],tag:'ECG · troponin · d-dimer done'};
-    paintCM();
-    // Also caught while fixing the block above: this line was still
-    // Marathi ("आणि") too — missed by the earlier sweep since it's inline
-    // here, not near the UTT/Q_ASK/Q_ANS declarations. Hand-written Hindi,
-    // unverified, same caveat as the rest of this file's Hindi content.
-    utt({w:'Doctor',o:'ECG, troponin और d-dimer करवा लीजिए।',e:'Get an ECG, troponin and d-dimer done.'});
-  }
-  if(step===10){$('notecard').classList.remove('hide');$('snip').textContent=SNIP;}
-}
-// The button now ONLY plays audio + animates — it no longer advances the
-// step (a separate earlier bug had it silently doing go(1) and nothing
-// else, inherited from before audio existed). Reaching step 7 via the
-// main Next button/Space no longer auto-plays either — audio now only
-// ever starts from an explicit press of this button or a per-line play
-// button in utt(), never as a side effect of navigating.
-function askAloud(){
-  const b64=STAGES[0]&&STAGES[0].question_audio_b64;
-  if(!b64)return;
-  const btn=$('askbtn'),spk=$('spk');
-  btn&&btn.classList.add('playing');spk&&spk.classList.add('active');
-  playAudio('data:audio/wav;base64,'+b64,()=>{btn&&btn.classList.remove('playing');spk&&spk.classList.remove('active');});
-}
-function bindAsk(){const b=$('askbtn');if(b)b.onclick=askAloud;}
-function go(d){
-  const n=step+d;
-  if(n>STEPS){reset();return}
-  if(n<0)return;
-  if(d>0){step=n;render()}
-  else{const t=n;resetNarration();for(let i=1;i<=t;i++){step=i;render()}}
-}
-// Rewinds only what the scripted step choreography itself owns (transcript
-// panel, doc chips, service lights, the closing note card) so the clinician
-// can step back to re-check something without it looking like a reset —
-// dnote-input/dxState/cmState/live evidence accumulator are real,
-// already-established information, not narration playback state, and must
-// survive backward navigation. Going forward again re-runs the same step
-// blocks and repaints identically, so nothing here needs to be idempotent
-// beyond what render() already is. Used by go()'s back branch; the "R"/
-// Replay path below still wants the FULL reset(), since that's a
-// deliberate start-over, not a review.
-function resetNarration(){
-  stopQuestionAudio();
-  step=0;
-  $('tx').innerHTML='<div class="empty">Waiting for consultation to begin.</div>';
-  $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
-  $('docn').textContent='0 scanned';$('mode').textContent='idle';
-  $('notecard').classList.add('hide');
-  ['s-stt','s-vis','s-tts'].forEach(i=>svc(i,0));
-}
+// One reset clears the whole session back to a blank slate for a new
+// patient — no step machinery to rewind, since nothing is step-driven
+// anymore. Every panel goes back to its true "nothing captured yet" state.
 function reset(){
   stopQuestionAudio();
-  step=0;
   dxState=null;cmState=null;
+  committed=false;hasLiveInput=false;
   liveTranscriptExtra='';liveDocTextExtra='';
   if(analyzeTimer){clearTimeout(analyzeTimer);analyzeTimer=null;}
   analyzeQueued=false;
@@ -805,54 +558,27 @@ function reset(){
   $('tx').innerHTML='<div class="empty">Waiting for consultation to begin.</div>';
   $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
   $('docn').textContent='0 scanned';$('mode').textContent='idle';
-  $('cm').innerHTML='<div class="empty">Insufficient evidence to rank.</div>';
+  $('cm').innerHTML=GATE_MSG;
   $('qbody').innerHTML='<div class="empty">Posterior too flat to discriminate.</div>';
-  $('igtag').textContent='';$('cmtag').textContent='ranked by P × harm-if-missed';
-  $('dx').innerHTML='<div class="empty">—</div>';$('mis').innerHTML='<div class="empty">—</div>';$('dxtag').textContent='';
-  $('notecard').classList.add('hide');
-  ['s-stt','s-vis','s-tts'].forEach(i=>svc(i,0));
-  render();
+  $('igtag').textContent='';$('cmtag').textContent='';
+  $('dx').innerHTML=GATE_MSG;$('mis').innerHTML='<div class="empty">—</div>';$('dxtag').textContent='';
+  ['s-stt','s-vis'].forEach(i=>svc(i,0));
 }
-$('next').onclick=()=>go(1);
-$('back').onclick=()=>go(-1);
-document.addEventListener('keydown',e=>{
-  const tag=(e.target&&e.target.tagName)||'';
-  const inField=tag==='TEXTAREA'||tag==='INPUT'||tag==='SELECT';
-  // Arrow keys always drive slide navigation, even while a text field
-  // happens to have focus — only space/R are guarded, since those are
-  // ordinary characters someone typing a note needs to type.
-  if(e.key==='ArrowRight'){e.preventDefault();if(step<STEPS)go(1)}
-  else if(e.key==='ArrowLeft'){e.preventDefault();go(-1)}
-  else if(inField)return;
-  else if(e.key===' '){e.preventDefault();go(1)}
-  else if(e.key==='r'||e.key==='R'){reset()}
-});
+$('new-consult').onclick=()=>{
+  if(confirm('Start a new consultation? This clears the transcript, documents, note, and analysis.')) reset();
+};
 
 function paintPatientBar(){
   const lang=LANGUAGES.find(l=>l.code===SETUP.languageCode)||LANGUAGES[0];
   $('patientbar').innerHTML=`<b>${SETUP.name}</b> · ${SETUP.gender}, <b>${SETUP.age}</b> · Case ID <b>${SETUP.caseId}</b> · <b>${lang.native}</b>`;
 }
 
-async function boot(){
-  $('next').disabled=true;
-  $('next').textContent='Running live assessment…';
-  await loadContract(SETUP.languageCode);
-  if(LOAD_ERROR){
-    $('next').textContent='Live /assess call failed';
-    $('tx').innerHTML=`<div class="empty">Could not load live assessment: ${LOAD_ERROR}<br>Confirm main.py is running (python main.py) and reachable at this origin, then reload.</div>`;
-    return;
-  }
-  $('next').disabled=false;
-  reset();
-}
-
 // Pre-consultation setup: patient name/age/gender/Case ID and the consult
-// language are collected here, BEFORE the idle "Waiting for consultation to
-// begin" screen or any /assess call — the selected language has to be known
-// up front since it's sent on every /assess call from here on (see
-// loadContract's language_code). Dropdown is populated from LANGUAGES only
-// (bulbul-v3's 11 TTS voices), not a hand-typed <option> list, so it can't
-// drift out of sync with what "ask this aloud" can actually speak.
+// language are collected here, before the live view appears — the
+// selected language has to be known up front since it's sent on every
+// live-recording/document-scan call from here on. Dropdown is populated
+// from LANGUAGES only (bulbul-v3/saaras-v3's supported set), not a
+// hand-typed <option> list, so it can't drift out of sync.
 (function initSetup(){
   const sel=$('f-lang');
   sel.innerHTML=LANGUAGES.map(l=>`<option value="${l.code}">${l.label}</option>`).join('');
@@ -869,7 +595,7 @@ async function boot(){
     paintPatientBar();
     $('setupScreen').classList.add('hide');
     $('app').classList.remove('hide');
-    boot();
+    reset();
   });
 })();
 
@@ -963,8 +689,10 @@ async function liveSend(){
       e: data.transcript_en ? escHtml(data.transcript_en) : '',
       audioSrc: URL.createObjectURL(liveBlob),
     });
+    svc('s-stt',1); $('mode').textContent='saaras-v3 · codemix · live';
     if(data.transcript){
       liveTranscriptExtra += (liveTranscriptExtra?'\n':'') + data.transcript;
+      hasLiveInput=true; paintDX(); paintCM();
       scheduleAnalyze();
     }
     $('live-result').textContent='Transcribed — added to the Consultation panel above.';
@@ -1049,7 +777,9 @@ async function docSend(){
     if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
     renderScannedDocs(data.scanned_documents || []);
     if((data.scanned_documents||[]).length){
+      svc('s-vis',1);
       liveDocTextExtra += (liveDocTextExtra?'\n\n':'') + data.scanned_documents.map(d=>d.text).join('\n\n');
+      hasLiveInput=true; paintDX(); paintCM();
       scheduleAnalyze();
     }
     $('doc-result').textContent='Scanned — panel above updated.';

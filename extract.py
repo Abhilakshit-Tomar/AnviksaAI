@@ -112,6 +112,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+import httpx
 from sarvamai import SarvamAI
 from sarvamai.core.api_error import ApiError
 
@@ -164,9 +165,20 @@ def _with_retry(fn, *args, max_retries=5, **kwargs):
             if not getattr(resp.choices[0].message, "tool_calls", None):
                 raise _ToolCallMissing("response had no tool_calls despite forced tool_choice")
             return resp
-        except (ApiError, _ToolCallMissing) as e:
+        # httpx.TimeoutException/NetworkError observed LIVE 2026-08-21, twice
+        # in a row, mid-demo: "[WinError 10060] A connection attempt failed
+        # ..." and "The read operation timed out" (the client's timeout=90.0
+        # firing). Both are the sarvamai SDK's underlying httpx client
+        # raising unwrapped -- not an ApiError, so the except clause below
+        # never caught them and the call failed hard on the FIRST attempt,
+        # no retry at all, despite being exactly the kind of transient
+        # network hiccup the other exception types here already retry.
+        except (ApiError, _ToolCallMissing, httpx.TimeoutException, httpx.NetworkError) as e:
             status = getattr(e, "status_code", None) if isinstance(e, ApiError) else None
-            retryable = isinstance(e, _ToolCallMissing) or status in (429, 500, 502, 503, 504)
+            retryable = (
+                isinstance(e, (_ToolCallMissing, httpx.TimeoutException, httpx.NetworkError))
+                or status in (429, 500, 502, 503, 504)
+            )
             if retryable and attempt < max_retries - 1:
                 time.sleep(delay)
                 delay *= 2
