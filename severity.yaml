@@ -1,107 +1,261 @@
 # harm_if_missed — the clinical judgment this product encodes.
 #
+# ############################################################################
+# THIS FILE IS THE ONLY HUMAN-AUDITABLE SAFEGUARD IN THE SYSTEM.
+#
+# There is no dataset, no calibration, and no eval anywhere downstream. No
+# metric will catch a wrong entry here. This file alone decides what gets
+# flagged as life-threatening and what can be ticked off the panel.
+#
+# A CLINICIAN MUST REVIEW IT BEFORE THIS TOUCHES A REAL PATIENT.
+# Drafted from published emergency-medicine "can't miss" lists. Unreviewed.
+# ############################################################################
+#
 # ORDERS OF MAGNITUDE, NOT A LINEAR 1-5. Missing an MI is ~100x worse than
-# missing a sore throat, not 5x. A linear scale breaks the whole product:
-# a 44% panic attack at severity 1 outranks a 9.6% PE at severity 5, and
-# the Can't-Miss panel silently starts agreeing with the doctor.
+# missing a sore throat, not 5x. On a linear scale a likely benign condition
+# outranks a rare lethal one and the panel quietly starts agreeing with the
+# doctor.
 #
 # tiers:
-#   100  lethal within hours if missed
+#   100  lethal or irreversible within hours if missed
 #    30  organ- or life-threatening over days; major morbidity
 #    10  significant morbidity; needs definite treatment
 #     3  needs treatment, not urgent
 #     1  self-limiting
 #
-# derive the tier from time-to-irreversible-harm and be ready to say so.
-# GET A CLINICIAN TO REVIEW THIS FILE. It is 49 lines and it is the single
-# most attackable artifact in the project.
+# Derive the tier from time-to-irreversible-harm and be ready to say so.
+#
+# Common benign conditions are rated explicitly rather than omitted, so that
+# "unrated" honestly means "we have no entry for this" and not "this is
+# probably fine."
+#
+# TWO INVARIANTS, both enforced by selftest.py:
+#   1. Every condition at severity >= 10 MUST have an excluded_by entry.
+#      If it can reach the panel, it must be able to leave. The previous
+#      version violated this for 19 of 37 eligible conditions -- including
+#      one at severity 100 -- which meant the panel could never be finished.
+#   2. excluded_by never auto-removes. It proposes; the clinician confirms.
 
-default: 3
+default: null   # null, not 3 -- an unlisted condition is UNRATED, not benign.
 
 pathologies:
-  # --- 100: lethal within hours -------------------------------------------
-  Anaphylaxis: 100
-  "Acute pulmonary edema": 100
+  # === 100: lethal or irreversible within hours =============================
+
+  # --- cardiac / vascular ---
   "Possible NSTEMI / STEMI": 100
   "Unstable angina": 100
+  "Aortic dissection": 100
+  "Ruptured abdominal aortic aneurysm": 100
   "Pulmonary embolism": 100
+  "Cardiac tamponade": 100
+  "Acute pulmonary edema": 100
+
+  # --- neurological ---
+  "Subarachnoid haemorrhage": 100
+  "Acute stroke / TIA": 100
+  "Bacterial meningitis": 100
+  Encephalitis: 100
+  "Cauda equina syndrome": 100
+  "Raised intracranial pressure": 100
+  "Status epilepticus": 100
+
+  # --- airway / respiratory ---
+  Anaphylaxis: 100
   Epiglottitis: 100
-  Ebola: 100
+  "Tension pneumothorax": 100
+  "Status asthmaticus / severe asthma": 100
+
+  # --- abdominal / surgical ---
+  "Ectopic pregnancy": 100
+  "Perforated viscus": 100
+  "Mesenteric ischaemia": 100
+  "Bowel obstruction": 100
+  "Testicular torsion": 100
+  "Ovarian torsion": 100
+  Appendicitis: 100
+  "Upper GI bleed": 100
   Boerhaave: 100
 
-  # --- 30: organ/life-threatening over days -------------------------------
+  # --- infection / systemic ---
+  Sepsis: 100
+  "Severe malaria": 100
+  "Dengue with warning signs": 100
+  "Necrotising fasciitis": 100
+  Tetanus: 100
+
+  # --- metabolic / endocrine ---
+  "Diabetic ketoacidosis": 100
+  Hypoglycaemia: 100
+  Hyperkalaemia: 100
+  "Adrenal crisis": 100
+  "Thyroid storm": 100
+
+  # --- obstetric ---
+  "Pre-eclampsia / eclampsia": 100
+  "Postpartum haemorrhage": 100
+
+  # --- other ---
+  "Acute angle-closure glaucoma": 100
+  "Poisoning / overdose": 100
+
+  # === 30: organ- or life-threatening over days ============================
   "Spontaneous pneumothorax": 30
   Myocarditis: 30
   Pericarditis: 30
-  "Guillain-Barré syndrome": 30
   "Atrial fibrillation": 30
   PSVT: 30
-  "Pancreatic neoplasm": 30
-  "Pulmonary neoplasm": 30
-  Tuberculosis: 30
-  Croup: 30
-  "Acute COPD exacerbation / infection": 30
-  Pneumonia: 30
-  "Myasthenia gravis": 30
-  Chagas: 30
-  "HIV (initial infection)": 30
-  Larygospasm: 30
-  "Bronchospasm / acute asthma exacerbation": 30
   "Stable angina": 30
+  "Guillain-Barré syndrome": 30
+  "Temporal arteritis": 30
+  "Myasthenia gravis": 30
+  Pneumonia: 30
+  Tuberculosis: 30
+  "Pulmonary neoplasm": 30
+  "Acute COPD exacerbation": 30
+  "Acute pancreatitis": 30
+  "Cholangitis / cholecystitis": 30
+  "Incarcerated hernia": 30
+  "Pyelonephritis": 30
+  "Acute kidney injury": 30
+  "Severe hyponatraemia": 30
+  "Enteric fever": 30
+  "HIV (initial infection)": 30
+  "Retinal detachment": 30
+  "Pancreatic neoplasm": 30
 
-  # --- 10: significant morbidity ------------------------------------------
+  # === 10: significant morbidity ===========================================
+  "Severe anaemia": 10
+  "Deep vein thrombosis": 10
   SLE: 10
   Sarcoidosis: 10
-  Anemia: 10
   Bronchiectasis: 10
-  "Acute dystonic reactions": 10
+  "Acute dystonic reaction": 10
+  "Urinary tract infection": 10
+  Cellulitis: 10
+  "Peptic ulcer disease": 10
   "Inguinal hernia": 10
-  "Whooping cough": 10
-  Bronchiolitis: 10
-  Bronchitis: 10
   "Scombroid food poisoning": 10
-  "Spontaneous rib fracture": 10
 
-  # --- 3: needs treatment, not urgent -------------------------------------
+  # === 3: needs treatment, not urgent ======================================
   Influenza: 3
   "Cluster headache": 3
+  Migraine: 3
   "Acute otitis media": 3
-  "Chronic rhinosinusitis": 3
   "Acute rhinosinusitis": 3
-  "Localized edema": 3
+  "Chronic rhinosinusitis": 3
+  Gastroenteritis: 3
+  "Localised oedema": 3
 
-  # --- 1: self-limiting ---------------------------------------------------
+  # === 1: self-limiting ====================================================
   GERD: 1
   "Panic attack": 1
   URTI: 1
   "Viral pharyngitis": 1
   "Acute laryngitis": 1
-  "Allergic sinusitis": 1
+  "Allergic rhinitis": 1
+  "Tension headache": 1
+  "Musculoskeletal chest pain": 1
 
-# What action takes a condition OFF the Can't-Miss panel.
+# What action would take a condition OFF the Can't-Miss panel.
 #
-# This is the fix for alert fatigue, and it is the difference between a
-# safety net and a smoke alarm that goes off when you make toast. Without
-# it, PE and ACS appear on every chest complaint forever and the doctor
-# stops reading the panel within a week.
+# This is the fix for alert fatigue, and the difference between a safety net
+# and a smoke alarm that goes off when you make toast. Without it, PE and ACS
+# appear on every chest complaint forever and the doctor stops reading the
+# panel within a week. The panel answers "what haven't you ruled out" -- a
+# question that must be able to be FINISHED.
 #
-# The panel answers "what haven't you ruled out", not "what could this be".
+# THESE DO NOT AUTO-REMOVE. Recording one of these actions prompts the
+# clinician to confirm the exclusion. A wrong entry here would otherwise
+# silently delete a warning, which is the one error shape in this system
+# that looks like patient harm rather than noise.
 excluded_by:
-  "Pulmonary embolism":        [d_dimer, ctpa, wells_documented]
-  "Possible NSTEMI / STEMI":   [ecg, troponin]
-  "Unstable angina":           [ecg, troponin]
-  "Acute pulmonary edema":     [cxr, bnp]
-  "Spontaneous pneumothorax":  [cxr, auscultation_documented]
-  Myocarditis:                 [ecg, troponin, echo]
-  Pericarditis:                [ecg, echo]
-  Pneumonia:                   [cxr, auscultation_documented]
-  Tuberculosis:                [cxr, sputum_afb, cbnaat]
-  "Pulmonary neoplasm":        [cxr, ct_chest]
-  "Pancreatic neoplasm":       [ct_abdomen, usg_abdomen]
-  Anemia:                      [cbc, hb]
-  "Atrial fibrillation":       [ecg]
-  PSVT:                        [ecg]
-  "Stable angina":             [ecg, tmt]
-  Epiglottitis:                [laryngoscopy, neck_xray]
-  Anaphylaxis:                 [observed_response_to_adrenaline]
-  Boerhaave:                   [cxr, ct_chest]
+  # --- cardiac / vascular ---
+  "Possible NSTEMI / STEMI":            [ecg, troponin]
+  "Unstable angina":                    [ecg, troponin]
+  "Aortic dissection":                  [ct_angiogram_chest, ted_echo]
+  "Ruptured abdominal aortic aneurysm": [usg_abdomen, ct_abdomen]
+  "Pulmonary embolism":                 [d_dimer, ctpa, wells_documented]
+  "Cardiac tamponade":                  [echo]
+  "Acute pulmonary edema":              [cxr, bnp, echo]
+  "Spontaneous pneumothorax":           [cxr, auscultation_documented]
+  "Tension pneumothorax":               [cxr, needle_decompression_response]
+  Myocarditis:                          [ecg, troponin, echo]
+  Pericarditis:                         [ecg, echo]
+  "Atrial fibrillation":                [ecg]
+  PSVT:                                 [ecg]
+  "Stable angina":                      [ecg, tmt]
+  "Deep vein thrombosis":               [doppler_leg, d_dimer]
+
+  # --- neurological ---
+  "Subarachnoid haemorrhage":  [ct_head, lumbar_puncture]
+  "Acute stroke / TIA":        [ct_head, mri_brain]
+  "Bacterial meningitis":      [lumbar_puncture]
+  Encephalitis:                [lumbar_puncture, mri_brain]
+  "Cauda equina syndrome":     [mri_spine]
+  "Raised intracranial pressure": [ct_head, fundoscopy]
+  "Status epilepticus":        [observed_seizure_cessation]
+  "Guillain-Barré syndrome":   [nerve_conduction_study, lumbar_puncture]
+  "Temporal arteritis":        [esr, crp, temporal_artery_biopsy]
+  "Myasthenia gravis":         [ach_receptor_antibody, repetitive_nerve_stimulation]
+
+  # --- airway / respiratory ---
+  Anaphylaxis:                        [observed_response_to_adrenaline]
+  Epiglottitis:                       [laryngoscopy, neck_xray]
+  "Status asthmaticus / severe asthma": [peak_flow, abg]
+  Pneumonia:                          [cxr, auscultation_documented]
+  Tuberculosis:                       [cxr, sputum_afb, cbnaat]
+  "Pulmonary neoplasm":               [cxr, ct_chest]
+  "Acute COPD exacerbation":          [cxr, abg]
+  Bronchiectasis:                     [ct_chest]
+
+  # --- abdominal / surgical ---
+  "Ectopic pregnancy":        [urine_hcg, usg_pelvis]
+  "Perforated viscus":        [erect_cxr, ct_abdomen]
+  "Mesenteric ischaemia":     [ct_angiogram_abdomen, lactate]
+  "Bowel obstruction":        [abdominal_xray, ct_abdomen]
+  "Testicular torsion":       [doppler_scrotum]
+  "Ovarian torsion":          [usg_pelvis_doppler]
+  Appendicitis:               [usg_abdomen, ct_abdomen]
+  "Upper GI bleed":           [cbc, endoscopy]
+  Boerhaave:                  [erect_cxr, ct_chest]
+  "Acute pancreatitis":       [serum_lipase, serum_amylase]
+  "Cholangitis / cholecystitis": [usg_abdomen, lft]
+  "Incarcerated hernia":      [clinical_exam_documented, usg_abdomen]
+  "Peptic ulcer disease":     [endoscopy]
+  "Pancreatic neoplasm":      [ct_abdomen, usg_abdomen]
+
+  # --- infection / systemic ---
+  Sepsis:                  [blood_culture, lactate, qsofa_documented]
+  "Severe malaria":        [peripheral_smear, rapid_malaria_antigen]
+  "Dengue with warning signs": [cbc, platelet_count, ns1_antigen]
+  "Necrotising fasciitis": [clinical_exam_documented, ct_soft_tissue]
+  Tetanus:                 [clinical_exam_documented, immunisation_history_documented]
+  "Enteric fever":         [blood_culture, widal]
+  "HIV (initial infection)": [hiv_test]
+  Cellulitis:              [clinical_exam_documented]
+  Pyelonephritis:          [urinalysis, urine_culture]
+  "Urinary tract infection": [urinalysis, urine_culture]
+
+  # --- metabolic / endocrine / renal ---
+  "Diabetic ketoacidosis": [blood_glucose, serum_ketones, abg]
+  Hypoglycaemia:           [blood_glucose]
+  Hyperkalaemia:           [serum_potassium, ecg]
+  "Adrenal crisis":        [serum_cortisol, serum_electrolytes]
+  "Thyroid storm":         [thyroid_function_test]
+  "Acute kidney injury":   [serum_creatinine, serum_urea]
+  "Severe hyponatraemia":  [serum_sodium]
+  "Severe anaemia":        [cbc, haemoglobin]
+
+  # --- obstetric ---
+  "Pre-eclampsia / eclampsia": [bp_documented, urine_protein]
+  "Postpartum haemorrhage":    [clinical_exam_documented, cbc]
+
+  # --- other ---
+  "Acute angle-closure glaucoma": [tonometry]
+  "Retinal detachment":           [fundoscopy, usg_eye]
+  "Poisoning / overdose":         [toxicology_screen, exposure_history_documented]
+  SLE:                            [ana, anti_dsdna]
+  Sarcoidosis:                    [cxr, serum_ace]
+  "Acute dystonic reaction":      [observed_response_to_anticholinergic]
+  "Scombroid food poisoning":     [observed_response_to_antihistamine]
+  "Inguinal hernia":              [clinical_exam_documented, usg_abdomen]

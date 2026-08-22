@@ -429,11 +429,12 @@ def analyze(req: AnalyzeRequest):
     return payload
 
 
-@app.get("/contract.json")
-def serve_contract():
-    if not CONTRACT_PATH.exists():
-        raise HTTPException(404, "contract.json doesn't exist yet — run demo_case.py --dump-all")
-    return FileResponse(CONTRACT_PATH, media_type="application/json")
+# GET /contract.json is deliberately gone. It served pre-computed engine
+# output to the frontend, which is how a "live" demo kept showing canned
+# results. Nothing fetches it any more (web/index.html calls only /capture
+# and /analyze), and it is not coming back: every number on screen must come
+# from this patient's own recording or documents, this session. The file
+# itself goes at migration step 8.
 
 
 @app.get("/")
