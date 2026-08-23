@@ -8,13 +8,14 @@
 *.key
 secrets.json
 
-# --- Raw DDXPlus release — 808 MB unpacked. ---------------------------
-# Re-download from Figshare (see README). counts.npz IS committed;
-# the demo machine must never rebuild from the raw CSVs.
+# --- DDXPlus, deleted 2026-08-23 ---------------------------------------
+# The dataset is gone and nothing reads it any more. These stay listed so a
+# stale local copy can't be committed by accident.
 ddxplus/
 release_train_patients.zip
 release_validate_patients.zip
 release_test_patients.zip
+counts.npz
 
 # --- generated ---------------------------------------------------------
 cache/

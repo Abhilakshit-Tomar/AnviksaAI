@@ -51,9 +51,24 @@
 # FIELDS
 #   label — short noun phrase for the panel. Not a sentence.
 #   ask   — the question actually put to the patient, in plain English,
-#           answerable yes or no. This string gets translated and spoken, so
-#           it must survive translation: no idiom, no double negatives, no
-#           two questions joined by "and".
+#           answerable yes or no.
+#
+# THE `ask` STRING IS TRANSLATED AND SPOKEN ALOUD. It must survive that: no
+# idiom, no double negatives, no two questions joined by "and", and — learned
+# the hard way — NO WORD THAT MEANS SOMETHING ELSE OUTSIDE MEDICINE. The
+# original calf question used "calves", and Sarvam rendered it into Bengali
+# as a baby cow's milk duct. It was spoken to the patient that way, and the
+# only reason anyone noticed is that the translated sentence is printed on
+# screen next to the audio.
+#
+# When a body part or symptom has a plainer synonym, use the plainer one:
+# "lower leg" over "calf". A wrong answer to a mistranslated question enters
+# the findings pipeline as genuine evidence and is indistinguishable
+# afterwards from something the patient actually said.
+#
+# None of the other 216 have been checked by a native speaker. That review is
+# a real blocker on speaking questions to real patients, the same way
+# severity.yaml's review is a blocker on the panel.
 #
 # Findings marked "(Examination)" or "(Observation)" in `ask` are for the
 # clinician, not the patient, and must never be spoken aloud to the patient.

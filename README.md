@@ -40,15 +40,15 @@ Sarvam captures  ->  an LLM reads and proposes  ->  our rulebook triages  ->  cl
 
 | File | What |
 |---|---|
-| `capture.py` | `saaras-v3` batch STT (diarized), `sarvam-vision` on documents, translation. All disk-cached by content hash. |
-| `extract.py` | transcript + documents → findings, three-valued, each with the quote that justifies it |
+| `capture.py` | `saaras-v3` batch STT (diarized), `sarvam-vision` on documents, translation, `bulbul-v3` speech. All disk-cached by content hash. |
+| `extract.py` | transcript + documents → findings, three-valued, each with the quote that justifies it. Also screens each document: is this clinical at all? |
 | `propose.py` | findings → candidate conditions + what supports and opposes each. Never sees the transcript. |
 | `engine.py` | severity band, exclusion state, support ordering, the next question. No network, no randomness. |
 | `findings.yaml` | the finding vocabulary — hand-written |
 | `severity.yaml` | harm-if-missed + what rules each condition out — **hand-written clinical judgment** |
 | `canonical_case.yaml` | the one case that defines what correct output looks like |
 | `selftest.py` | the invariants |
-| `main.py` | FastAPI. `POST /capture` (STT/OCR), `POST /analyze` (extract + propose + triage) |
+| `main.py` | FastAPI. `POST /capture` (STT/OCR + screening), `POST /analyze` (extract + propose + triage), `POST /speak` (translate + say the question aloud) |
 | `web/index.html` | single file, no build step |
 
 Two LLM calls, never one. Extraction must not see the candidate list, or the
@@ -75,6 +75,12 @@ false precision at some point in this project's history.
 - **Every candidate carries its reasoning.** With no eval, the visible
   reasoning and the clinician are the entire safety net.
 - **No chat interface.** Nobody types a prompt during a 2-minute consult.
+- **A document that doesn't look clinical is set aside, not deleted.** One
+  click puts it back — discarding a real prescription loses evidence nobody
+  would know was missing.
+- **A spoken question is always shown as text.** Machine translation of
+  clinical phrasing is unverified; printing it is what makes a bad one
+  catchable.
 
 ## What this is not
 
@@ -90,6 +96,13 @@ window**, and nobody should say otherwise. What it can claim: it happens
 without anyone being asked to type a prompt, it keeps state across a consult
 that a chat cannot, and the dangerousness ranking applied to its output is a
 reviewed file rather than a generation.
+
+**The 217 questions in `findings.yaml` have not been checked by native
+speakers.** They are translated at the moment they are spoken. The first test
+of that feature asked, in Bengali, whether one of the patient's *child's milk
+ducts* was swollen — "calf" read as the baby animal. That one is fixed; the
+other 216 are unverified, and a mistranslated question produces an answer
+that enters the pipeline as genuine evidence.
 
 **`severity.yaml` has not been reviewed by a clinician.** It is drafted from
 published emergency-medicine can't-miss lists and is the only human-auditable

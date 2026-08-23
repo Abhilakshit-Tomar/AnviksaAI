@@ -56,21 +56,28 @@ Sarvam captures  ->  LLM reads and proposes  ->  our rulebook triages  ->  clini
 | Stage | Owner | What |
 |---|---|---|
 | capture | `capture.py` | `saaras-v3` batch STT (diarized), `sarvam-vision` on documents |
+| screen | `extract.py` | is this document clinical at all? per document, before anything is merged |
 | extract | `extract.py` | this patient's transcript/documents -> findings, three-valued |
 | propose | `propose.py` | findings -> candidate conditions + what supports/opposes each |
 | triage | `engine.py` | severity band, exclusion state, support ordering |
 | ask | `engine.py` | the finding that bears on the most dangerous open candidate |
+| speak | `capture.speak()` | the question, translated, in the patient's language |
 
 There is no `api/` package; every module above sits at the repo root.
 
-**`capture.speak()` is gone.** It existed, worked, and nothing called it —
-the "ask this aloud" button went when the scripted walkthrough did. It was
-deleted rather than wired up, because wiring it now would ship the
-one-hardcoded-Hindi-sentence failure again: speaking the question properly
-needs `capture.translate()` in the loop, and that needs a native speaker to
-check the clinical phrasing first (see "Later, not now"). A documented stage
-no code path reaches is how the last round of stale docs happened; so is a
-half-wired one. It is in git history when the translation work is done.
+**Screening happens per document and cannot be moved later.** `/analyze`
+concatenates every document into one blob, and after that a game
+screenshot's words are indistinguishable from a prescription's. That is not
+a hypothetical either: a screenshot uploaded alongside a real consultation
+changed the candidate list and added a finding nothing the patient said
+supported. So the screen runs in `/capture`, the last point at which
+per-document text exists.
+
+`screen_document()` judges what a document IS. It never sees the transcript
+or the vocabulary — a screen that knew which findings were being looked for
+would start rating documents by whether they were useful rather than by
+whether they were real. And it flags rather than deletes: see the exclusion
+rule below, which it is a case of.
 
 Two LLM calls, never one. Extraction must not see the candidate list, or the
 model starts extracting findings *because* they fit a condition it is already
@@ -188,6 +195,17 @@ coverage. Do not claim a number that cannot be measured.
   generic prior-driven suggestion styled as though it came from this patient.
 - **Severity-unrated is a visible tier.** A proposed condition absent from
   `severity.yaml` still appears, marked unrated. It is never silently dropped.
+- **A rejected document is set aside, never discarded.** Its text is kept,
+  the screen's reading of it is shown ("mobile game screenshot"), and one
+  click puts it back. Same asymmetry as exclusion: throwing away a real
+  prescription loses evidence nobody will ever know was missing.
+- **Cast wide when the findings are thin.** A vague complaint is the moment
+  *before* anything has been ruled out, which is when the broad list is worth
+  most. Support strength exists so a weak fit can be shown as weak — refusing
+  to speak throws that mechanism away and is not the cautious option, just an
+  unhelpful one. Abstention is for input with no clinical content at all.
+- **Never speak a question without showing what was said.** The spoken
+  sentence is printed beside the button. See "Later, not now".
 
 ## Layout
 
@@ -202,7 +220,7 @@ severity.yaml      harm-if-missed + exclusion rules   <- clinical judgment, hand
 findings.yaml      the finding vocabulary             <- hand-written
 canonical_case.yaml the one case that defines correct output
 selftest.py        invariants: never re-ask, exclusion, severity floor, determinism
-main.py            FastAPI: POST /capture (STT/OCR), POST /analyze (extract+propose+triage)
+main.py            FastAPI: /capture (STT/OCR + screen), /analyze (extract+propose+triage), /speak
 web/index.html     single file, no build step
 ```
 
@@ -248,7 +266,7 @@ pulmonary embolism has to survive.
 ## Migration status (2026-08-23) — done
 
 The DDXPlus migration is complete. Every step below has landed and its
-acceptance test passes. `python selftest.py` runs 66 invariants offline in
+acceptance test passes. `python selftest.py` runs 94 invariants offline in
 about a second, and a fresh clone runs with no external download — which had
 never been true before, because `extract.py` used to read its catalog from a
 gitignored 172 MB dataset.
@@ -256,7 +274,7 @@ gitignored 172 MB dataset.
 1. ~~Rewrite this file~~
 2. ~~Rewrite `severity.yaml`~~ — 91 conditions, 75 panel-eligible, every one
    with an exclusion rule (0 missing, 0 orphans).
-3. ~~Author `findings.yaml`~~ — 214 findings, all binary, plus labels for all
+3. ~~Author `findings.yaml`~~ — 217 findings, all binary, plus labels for all
    83 exclusion actions. `canonical_case.yaml` authored alongside it.
 4. ~~Write `propose.py`, rewrite `extract.py`~~ — two calls, `llm.py` shared
    between them, both cached at `temperature=0`.
@@ -294,10 +312,47 @@ could go wrong is the one place it has to be visible.
 Do not "tighten" this to exact matching. It will look cleaner and it will
 silently demote critical conditions.
 
+The same defect kept reappearing in new shapes once real consultations were
+run through it, and all of them are pinned in `selftest.py` now:
+
+- the rulebook being the MORE specific of the two — "Meningococcal
+  meningitis" does not contain "Bacterial meningitis", so it scored unrated;
+- a word unique to one entry *by accident* identifying nothing — "Viral
+  exanthem" matched "Viral pharyngitis" on `viral`, a rash rated as a sore
+  throat;
+- acronym against expansion — "Systemic lupus erythematosus flare" shares no
+  word at all with an entry named `SLE`, which is why `severity.yaml` grew an
+  `aliases` block;
+- and expanding those acronyms leaking generic words back into the loose
+  rule, so "Upper respiratory tract infection" matched **"Upper GI bleed"** on
+  `upper`, at the top severity band.
+
+The resolution worth keeping: **aliases feed strict containment only; the
+loose distinctive-word rule draws solely on the rulebook's own canonical
+names** — the words a clinician will actually review. Words for where
+something is or how bad it is never identify a condition alone.
+
+**Two more things silently ate information, and neither looked like a bug.**
+
+`propose.py` matched finding ids exactly, so a model answering "Headache"
+instead of "headache" lost every supporting finding. The panel then showed
+real candidates each captioned "no findings for it" while the same findings
+sat in Doesn't Fit saying nothing accounted for them — both halves of the
+screen wrong at once. Resolve loosely, filter strictly, and print what gets
+dropped rather than swallowing it.
+
+And a cache key must cover **everything that determines the answer**, not
+just the patient's words. Keyed on `(model, transcript, doc_text)`, adding
+three findings to the vocabulary changed nothing for any transcript already
+seen; the old, smaller extraction was served forever. Caught only by
+re-running the exact transcript that had exposed the gap. The key now hashes
+the system prompt, the tool schema and the whole catalog — and the catalog,
+not just its ids, because the prompt carries each finding's question too.
+
 ## Later, not now
 
-Recorded so they aren't re-derived, explicitly deferred until the migration
-finishes. Nothing here is a todo.
+Recorded so they aren't re-derived. Nothing here is a todo, and nothing here
+is blocking — except where it says it is.
 
 **Read exclusions off the report instead of asking for a tick.** The
 clinician photographs the d-dimer result; the document already flows through
@@ -324,25 +379,26 @@ through to speaking the raw English in an English voice. It went unnoticed
 because the scripted walkthrough pinned the displayed question to that one id,
 so the fallback never fired in a demo.
 
-`capture.speak()` was deleted rather than left sitting unwired — see
-Architecture. `capture.translate()` remains and always did the job: it takes
-source and target language codes and is already called in the other direction
-(hi-IN -> en-IN) for the transcript gloss. `findings.yaml` now supplies an
-`ask` string for every finding, written to survive translation — no idiom, no
-double negatives, no two questions joined by "and" — so the missing piece is
-only the wiring. The work is small.
+**This is now built** — `POST /speak`, translate then `capture.speak()`,
+with two guards. The route refuses a question it could not translate, because
+falling back to English in an English voice is the old bug wearing a new
+coat. And it refuses clinician-only findings server-side, not in the
+frontend, so no caller can read "Are the neck veins distended?" to a patient.
 
-One thing the vocabulary added that this will need: findings whose `ask`
-begins "(Examination)" or "(Observation)" are for the clinician and must
-never be spoken to the patient. `vocabulary.is_clinician_only()` flags them
-and the panel already labels them; a TTS path that ignores that flag would
-read "Are the neck veins distended?" aloud to the patient.
+**What remains is the verification, and it is not optional.** The translated
+sentence is printed on screen beside the audio, and that mitigation earned
+itself on the first test: asked in Bengali, the calf question came back as
+*"is one of your child's milk ducts more swollen than the other?"* — Sarvam
+had read "calf" in the animal sense. Nothing else in this system would have
+caught it. The wording was changed to "lower leg" and is now correct in four
+languages, but that is one question out of 217, fixed after the fact.
 
-**But do not ship it unverified.** Sarvam's translation quality on clinical
-phrasing across ten Indian languages is unknown, and a mistranslated question
-asked aloud produces a wrong answer that enters the findings pipeline as
-genuine evidence. Needs a native speaker to check the medical phrasing —
-same standard as `severity.yaml`, for the same reason.
+A mistranslated question asked aloud produces an answer that enters the
+findings pipeline as genuine evidence, indistinguishable afterwards from
+something the patient said. Printing the translation makes that catchable by
+someone who reads the language; it does not make it safe. **A native speaker
+still has to go through all 217 `ask` strings** — same standard as
+`severity.yaml`, for the same reason.
 
 **Measurement.** The deepest gap. Everything above is unfalsifiable until a
 clinician scores real consults on whether the panel was useful or noise. This

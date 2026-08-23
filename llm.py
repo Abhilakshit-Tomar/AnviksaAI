@@ -86,16 +86,26 @@ class ToolCallMissing(Exception):
     as a hard failure on first occurrence."""
 
 
-def call_tool(system_prompt, user_content, tool, *, max_tokens=4096, max_retries=3):
+def call_tool(system_prompt, user_content, tool, *, max_tokens=4096, max_retries=2):
     """One forced-tool-call round trip. Returns the parsed arguments dict.
 
     Retries on 429/5xx, on network and timeout errors, and on ToolCallMissing.
 
-    max_retries=3 with a 60s client timeout is a ~3 minute worst case against
-    a genuinely-down provider (3 x 60s of timeouts plus 2+4s of backoff).
-    The earlier 5 retries at a 90s timeout came to nearly 8 minutes, inside a
-    2-minute consult — long enough that the whole thing looked hung rather
-    than failed.
+    THE TIMEOUT BUDGET HAS TO BE READ END TO END, not per call. /analyze
+    makes TWO of these, so the worst case here doubles before the browser
+    sees anything. max_retries=2 at a 60s client timeout is 122s per call and
+    ~244s for the pair; at 3 retries it was 186s and ~372s.
+
+    That number has to stay BELOW the frontend's abort timer, or the browser
+    kills work that is still running and the clinician sees a stale panel
+    with no error. It was above it: the frontend aborted at 75s while a
+    single cold extraction measured 120s — one Sarvam timeout plus a
+    successful retry. The abort exists to recover a genuinely dead
+    connection, not to cap slow work, so it belongs above this ceiling and
+    now sits at 300s.
+
+    Anything hosting this needs to allow a request that long too; most
+    proxies cap well below it by default.
     """
     delay = 2.0
     for attempt in range(max_retries):

@@ -711,10 +711,13 @@ async function runAnalyze(){
   // (it just re-queues against a call that will never finish) — permanent
   // freeze with no recovery short of a page reload. 75s is comfortably
   // above extract.py's own 60s Sarvam timeout plus its retry backoff, so
-  // this only fires for a connection that's genuinely gone, not a real
-  // slow-but-alive call.
+  // 300s, which must stay ABOVE llm.py's own worst case (~244s for the two
+  // calls /analyze makes) — this exists to recover a dead connection, not to
+  // cap slow work. It was 75s, below a single cold extraction's measured
+  // 120s, so the browser was killing live work and leaving a stale panel
+  // with no error to explain it.
   const abort=new AbortController();
-  const abortTimer=setTimeout(()=>abort.abort(), 75000);
+  const abortTimer=setTimeout(()=>abort.abort(), 300000);
   try{
     const res=await fetch('/analyze', {
       method:'POST', headers:{'Content-Type':'application/json'},
