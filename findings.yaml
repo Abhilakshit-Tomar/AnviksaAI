@@ -1,0 +1,861 @@
+# findings.yaml — the finding vocabulary. Hand-written.
+#
+# ############################################################################
+# WHY THIS FILE EXISTS AT ALL
+#
+# Extraction could return free text. It must not. Two things in this product
+# depend on a finding having a STABLE ID across turns of the same consult:
+#
+#   1. "Never re-ask what was already answered." A consult re-extracts over
+#      the whole accumulated transcript every time. If the same symptom comes
+#      back as "swollen left calf" on one pass and "unilateral calf oedema"
+#      on the next, nothing can tell they are the same thing, the answered
+#      set never matches, and the panel asks the identical question forever.
+#      That is not hypothetical — it is a bug this project already shipped.
+#
+#   2. "The panel must not churn." Showing what CHANGED between updates
+#      requires being able to diff two finding sets. Free text cannot diff.
+#
+# The LLM proposes candidate CONDITIONS with no list to choose from — that
+# stays unbounded and always will. It is only the FINDINGS that are
+# constrained, because findings are the things that must be matched over time.
+# ############################################################################
+#
+# EVERY FINDING IS BINARY: present / absent / UNKNOWN.
+#
+# No categorical findings, no value suffixes, no "onset: sudden|gradual". The
+# previous vocabulary had them and they caused a real stuck-on-the-same-
+# question bug: a whole-question denial recorded against the bare parent code
+# never matched the value-suffixed ids in the asked set, so the same question
+# returned every turn. Where a distinction matters it gets two ids
+# (onset_sudden_seconds AND onset_gradual_days) and the extractor may mark one
+# present and the other absent. Costs a few more lines here; removes an entire
+# class of bug downstream.
+#
+# UNKNOWN IS THE DEFAULT, AND IT IS NOT ABSENT. "Nobody asked about calf
+# swelling" is not "the patient denied calf swelling". Conflating them
+# penalises exactly the conditions this panel exists to surface.
+#
+# WHAT EARNS AN ID: a finding belongs here if it helps tell two conditions
+# apart, or if its absence would genuinely reassure. Findings every patient
+# has, and findings no clinician would act on, are noise in a prompt that is
+# already long.
+#
+# JOINT FINDINGS ARE THE WHOLE POINT. The old engine scored findings
+# independently and so could never represent "worse lying flat" AND "better
+# leaning forward" AND "recent viral illness" meaning pericarditis together
+# while meaning little apart. They are three separate ids here, deliberately,
+# because the model reading them can hold them jointly and the old arithmetic
+# had nowhere to put the joint meaning.
+#
+# FIELDS
+#   label — short noun phrase for the panel. Not a sentence.
+#   ask   — the question actually put to the patient, in plain English,
+#           answerable yes or no. This string gets translated and spoken, so
+#           it must survive translation: no idiom, no double negatives, no
+#           two questions joined by "and".
+#
+# Findings marked "(Examination)" or "(Observation)" in `ask` are for the
+# clinician, not the patient, and must never be spoken aloud to the patient.
+#
+# INVARIANTS (enforced by selftest.py)
+#   - every id is unique across all systems
+#   - every id is lowercase snake_case
+#   - every finding has both label and ask
+#   - every token in severity.yaml's excluded_by appears in investigations
+
+version: 1
+
+findings:
+
+  # === constitutional / systemic =============================================
+  general:
+    fever:
+      label: Fever
+      ask: "Have you had a fever?"
+    fever_with_rigors:
+      label: Fever with shaking chills
+      ask: "Did you shiver or shake uncontrollably with the fever?"
+    fever_cyclical:
+      label: Fever coming in cycles
+      ask: "Does the fever come and go at about the same time each day?"
+    night_sweats:
+      label: Night sweats
+      ask: "Do you wake up soaked in sweat at night?"
+    weight_loss_unintentional:
+      label: Unintentional weight loss
+      ask: "Have you lost weight without trying to?"
+    fatigue_severe:
+      label: Severe fatigue
+      ask: "Have you been much more tired than usual?"
+    appetite_loss:
+      label: Loss of appetite
+      ask: "Have you lost your appetite?"
+    unwell_rapidly_worsening:
+      label: Getting worse quickly
+      ask: "Are you getting worse quickly, over hours rather than days?"
+    collapse_or_fainting:
+      label: Collapse or fainting
+      ask: "Have you fainted or collapsed?"
+    lightheaded_on_standing:
+      label: Lightheaded on standing
+      ask: "Do you feel faint when you stand up?"
+    confusion_new:
+      label: New confusion
+      ask: "Have you been confused or not thinking clearly?"
+    weakness_generalised:
+      label: Generalised weakness
+      ask: "Do you feel weak all over?"
+    drowsy_or_hard_to_rouse:
+      label: Drowsy or hard to rouse
+      ask: "Have you been very sleepy, or hard to wake?"
+    reduced_urine_output:
+      label: Passing much less urine
+      ask: "Are you passing much less urine than usual?"
+
+  # === onset and time course =================================================
+  # Deliberately separate binary ids rather than one categorical "onset".
+  onset:
+    onset_sudden_seconds:
+      label: Sudden onset, within seconds
+      ask: "Did this start suddenly, reaching its worst within seconds?"
+    onset_gradual_days:
+      label: Gradual onset over days
+      ask: "Did this build up slowly over days?"
+    maximal_at_onset:
+      label: Worst at the very start
+      ask: "Was it at its worst right at the beginning, rather than building up?"
+    symptoms_hours_old:
+      label: Started within hours
+      ask: "Did this start today?"
+    symptoms_weeks_or_more:
+      label: Present for weeks or longer
+      ask: "Have you had this for more than two weeks?"
+    episodic_and_recurrent:
+      label: Comes and goes
+      ask: "Does it come and go, rather than staying constant?"
+    first_ever_episode:
+      label: First time this has happened
+      ask: "Is this the first time this has ever happened to you?"
+
+  # === pain characterisation (site-specific pain lives under its system) =====
+  pain:
+    pain_severe:
+      label: Severe pain
+      ask: "Is the pain severe — among the worst you have had?"
+    pain_out_of_proportion:
+      label: Pain out of proportion to findings
+      ask: "Is the pain far worse than the area looks or feels to the touch?"
+    pain_tearing_or_ripping:
+      label: Tearing or ripping pain
+      ask: "Does the pain feel like tearing or ripping inside?"
+    pain_crushing_pressure:
+      label: Crushing or pressure pain
+      ask: "Does it feel like heavy pressure, or a weight on you?"
+    pain_burning:
+      label: Burning pain
+      ask: "Does the pain burn?"
+    pain_colicky:
+      label: Pain comes in waves
+      ask: "Does the pain come in waves that build up and ease off?"
+    pain_pleuritic:
+      label: Worse on breathing in
+      ask: "Does it hurt more when you breathe in deeply?"
+    pain_worse_lying_flat:
+      label: Worse lying flat
+      ask: "Is it worse when you lie flat?"
+    pain_better_leaning_forward:
+      label: Better leaning forward
+      ask: "Does sitting up and leaning forward make it better?"
+    pain_worse_on_movement:
+      label: Worse on movement
+      ask: "Does moving make it worse?"
+    pain_reproducible_on_pressing:
+      label: Reproduced by pressing on it
+      ask: "Does pressing on the sore spot bring on exactly the same pain?"
+    pain_relieved_by_rest:
+      label: Relieved by rest
+      ask: "Does the pain settle when you stop and rest?"
+    pain_wakes_from_sleep:
+      label: Wakes from sleep
+      ask: "Does the pain wake you from sleep?"
+
+  # === cardiovascular ========================================================
+  cardiovascular:
+    chest_pain:
+      label: Chest pain
+      ask: "Do you have pain in your chest?"
+    chest_pain_on_exertion:
+      label: Chest pain on exertion
+      ask: "Does the chest pain come on when you walk or climb stairs?"
+    chest_pain_radiates_left_arm_or_jaw:
+      label: Radiates to arm or jaw
+      ask: "Does the pain spread to your arm, shoulder or jaw?"
+    chest_pain_radiates_to_back:
+      label: Radiates through to the back
+      ask: "Does the pain go through to your back, between the shoulder blades?"
+    chest_tightness:
+      label: Chest tightness
+      ask: "Does your chest feel tight?"
+    diaphoresis:
+      label: Cold sweat
+      ask: "Did you break into a cold sweat with it?"
+    nausea_with_chest_pain:
+      label: Nausea with the chest pain
+      ask: "Did you feel sick in the stomach along with the chest pain?"
+    palpitations:
+      label: Palpitations
+      ask: "Have you felt your heart racing or thumping?"
+    palpitations_irregular:
+      label: Heartbeat irregular
+      ask: "When your heart races, does it feel irregular rather than fast and steady?"
+    orthopnoea:
+      label: Breathless lying flat
+      ask: "Do you get breathless when you lie flat?"
+    paroxysmal_nocturnal_dyspnoea:
+      label: Wakes breathless at night
+      ask: "Do you wake at night gasping for breath?"
+    leg_swelling_bilateral:
+      label: Both legs swollen
+      ask: "Are both of your legs swollen?"
+    calf_swelling_unilateral:
+      label: One calf swollen
+      ask: "Is one of your calves more swollen than the other?"
+    calf_pain_or_tenderness:
+      label: Calf pain or tenderness
+      ask: "Is your calf painful, or tender to touch?"
+    raised_jvp_documented:
+      label: Raised JVP (examined)
+      ask: "(Examination) Are the neck veins distended?"
+    unequal_pulses_or_bp:
+      label: Unequal pulses or blood pressure
+      ask: "(Examination) Is the pulse or blood pressure different between the two arms?"
+    murmur_documented:
+      label: Murmur (examined)
+      ask: "(Examination) Is there a heart murmur?"
+    heart_sounds_muffled:
+      label: Heart sounds muffled (examined)
+      ask: "(Examination) Are the heart sounds muffled or distant?"
+    known_coronary_disease:
+      label: Known heart disease
+      ask: "Have you been told you have heart disease, or had a heart attack before?"
+
+  # === respiratory ===========================================================
+  respiratory:
+    breathlessness:
+      label: Breathlessness
+      ask: "Are you short of breath?"
+    breathlessness_sudden:
+      label: Sudden breathlessness
+      ask: "Did the breathlessness come on suddenly?"
+    breathlessness_at_rest:
+      label: Breathless at rest
+      ask: "Are you short of breath even sitting still?"
+    unable_to_complete_sentences:
+      label: Cannot finish a sentence
+      ask: "(Observation) Is the patient unable to complete a sentence in one breath?"
+    cough:
+      label: Cough
+      ask: "Do you have a cough?"
+    cough_productive:
+      label: Cough with phlegm
+      ask: "Are you coughing up phlegm?"
+    cough_over_two_weeks:
+      label: Cough lasting over two weeks
+      ask: "Have you been coughing for more than two weeks?"
+    haemoptysis:
+      label: Coughing up blood
+      ask: "Have you coughed up any blood?"
+    frothy_pink_sputum:
+      label: Pink frothy sputum
+      ask: "Have you coughed up pink frothy liquid?"
+    wheeze:
+      label: Wheeze
+      ask: "Does your breathing whistle or wheeze?"
+    stridor:
+      label: Harsh noise breathing in
+      ask: "(Observation) Is there a harsh noise when the patient breathes in?"
+    known_asthma_or_copd:
+      label: Known asthma or COPD
+      ask: "Have you been told you have asthma, or a long-term lung problem?"
+    no_relief_from_inhaler:
+      label: Inhaler no longer helping
+      ask: "Has your inhaler stopped helping?"
+    breath_sounds_absent_one_side:
+      label: Breath sounds absent one side (examined)
+      ask: "(Examination) Are breath sounds absent or reduced on one side?"
+    crackles_documented:
+      label: Crackles in the chest (examined)
+      ask: "(Examination) Are there crackles in the chest?"
+    tracheal_deviation:
+      label: Trachea deviated (examined)
+      ask: "(Examination) Is the trachea pushed to one side?"
+
+  # === neurological ==========================================================
+  neurological:
+    headache:
+      label: Headache
+      ask: "Do you have a headache?"
+    headache_worst_ever:
+      label: Worst headache of life
+      ask: "Is this the worst headache you have ever had?"
+    headache_thunderclap:
+      label: Thunderclap onset
+      ask: "Did the headache hit full force within seconds, like a blow to the head?"
+    headache_worse_on_waking:
+      label: Headache worst on waking
+      ask: "Is the headache at its worst when you first wake up?"
+    headache_worse_on_straining:
+      label: Worse on straining or coughing
+      ask: "Does coughing or straining make the headache worse?"
+    headache_unilateral_temporal:
+      label: One-sided temple pain
+      ask: "Is the pain over one temple?"
+    scalp_tenderness:
+      label: Scalp tender to touch
+      ask: "Is your scalp sore when you comb your hair?"
+    jaw_claudication:
+      label: Jaw aches on chewing
+      ask: "Does your jaw ache when you chew?"
+    neck_stiffness:
+      label: Neck stiffness
+      ask: "Is your neck stiff, or does it hurt to bring your chin to your chest?"
+    photophobia:
+      label: Light hurts the eyes
+      ask: "Does bright light hurt your eyes?"
+    vomiting_with_headache:
+      label: Vomiting with the headache
+      ask: "Have you vomited with the headache?"
+    weakness_one_side:
+      label: Weakness down one side
+      ask: "Is one side of your body weak?"
+    facial_droop:
+      label: Face drooping
+      ask: "Has one side of your face drooped?"
+    speech_slurred_or_lost:
+      label: Speech slurred or lost
+      ask: "Has your speech become slurred, or are words hard to get out?"
+    numbness_or_tingling:
+      label: Numbness or tingling
+      ask: "Do you have numbness, or pins and needles, anywhere?"
+    weakness_ascending_from_legs:
+      label: Weakness climbing from the legs
+      ask: "Did the weakness start in your feet and move upwards?"
+    weakness_worse_through_day:
+      label: Weakness worse by evening
+      ask: "Is the weakness worse in the evening than in the morning?"
+    ptosis_or_diplopia:
+      label: Drooping eyelid or double vision
+      ask: "Is your eyelid drooping, or are you seeing double?"
+    seizure:
+      label: Seizure
+      ask: "Have you had a fit or seizure?"
+    seizure_prolonged_or_repeated:
+      label: Seizure prolonged or repeated
+      ask: "Did the fit last more than five minutes, or happen again before you came round?"
+    loss_of_consciousness:
+      label: Lost consciousness
+      ask: "Did you black out?"
+    behaviour_change:
+      label: Change in behaviour
+      ask: "Has your behaviour or personality changed recently?"
+    unsteady_or_ataxic:
+      label: Unsteady on the feet
+      ask: "Have you become unsteady on your feet?"
+    trismus_or_muscle_spasm:
+      label: Jaw locking or muscle spasm
+      ask: "Is your jaw locking, or are your muscles going into spasm?"
+
+  # === head, eyes, ENT =======================================================
+  head_and_ent:
+    sore_throat:
+      label: Sore throat
+      ask: "Does your throat hurt?"
+    sore_throat_severe_with_drooling:
+      label: Severe sore throat with drooling
+      ask: "Is it so painful that you cannot swallow your own saliva?"
+    voice_muffled:
+      label: Muffled voice
+      ask: "Has your voice become muffled, as if you have something in your mouth?"
+    hoarseness:
+      label: Hoarse voice
+      ask: "Has your voice gone hoarse?"
+    difficulty_swallowing:
+      label: Difficulty swallowing
+      ask: "Is it hard to swallow?"
+    ear_pain:
+      label: Ear pain
+      ask: "Does your ear hurt?"
+    nasal_discharge:
+      label: Blocked or running nose
+      ask: "Is your nose blocked or running?"
+    facial_pain_or_pressure:
+      label: Facial pain or pressure
+      ask: "Do you have pain or pressure over your cheeks or forehead?"
+    sneezing_and_itchy_eyes:
+      label: Sneezing with itchy eyes
+      ask: "Are you sneezing a lot, with itchy watery eyes?"
+    eye_pain_red_eye:
+      label: Painful red eye
+      ask: "Is your eye painful and red?"
+    halos_around_lights:
+      label: Halos around lights
+      ask: "Do you see coloured rings around lights?"
+    vision_loss_sudden:
+      label: Sudden loss of vision
+      ask: "Have you suddenly lost vision, in part or all of one eye?"
+    floaters_or_curtain_over_vision:
+      label: Floaters or a curtain over vision
+      ask: "Are you seeing floating specks, or a curtain coming across your vision?"
+    vision_blurred:
+      label: Blurred vision
+      ask: "Is your vision blurred?"
+    retro_orbital_pain:
+      label: Pain behind the eyes
+      ask: "Does it hurt behind your eyes, especially when you move them?"
+
+  # === gastrointestinal ======================================================
+  gastrointestinal:
+    abdominal_pain:
+      label: Abdominal pain
+      ask: "Do you have pain in your abdomen?"
+    abdominal_pain_upper:
+      label: Upper abdominal pain
+      ask: "Is the pain in the upper part of your abdomen?"
+    abdominal_pain_right_lower:
+      label: Right lower abdominal pain
+      ask: "Is the pain in the lower right side of your abdomen?"
+    abdominal_pain_migrated_to_right_lower:
+      label: Pain moved to the right lower abdomen
+      ask: "Did the pain start around your navel and then move to the lower right?"
+    abdominal_pain_after_eating:
+      label: Pain after eating
+      ask: "Does the pain come on after you eat?"
+    abdominal_rigidity:
+      label: Rigid abdomen (examined)
+      ask: "(Examination) Is the abdomen board-like and rigid?"
+    abdominal_tenderness_documented:
+      label: Abdominal tenderness (examined)
+      ask: "(Examination) Is the abdomen tender?"
+    abdominal_distension:
+      label: Abdomen swollen
+      ask: "Has your abdomen become swollen?"
+    pulsatile_abdominal_mass:
+      label: Pulsatile abdominal mass (examined)
+      ask: "(Examination) Is there a pulsatile mass in the abdomen?"
+    vomiting:
+      label: Vomiting
+      ask: "Have you been vomiting?"
+    vomiting_persistent:
+      label: Cannot keep anything down
+      ask: "Are you unable to keep any fluids down?"
+    vomiting_forceful_before_pain:
+      label: Forceful vomiting before the pain
+      ask: "Did violent vomiting come first, and the pain start after it?"
+    haematemesis:
+      label: Vomiting blood
+      ask: "Have you vomited blood, or something like coffee grounds?"
+    melaena:
+      label: Black tarry stools
+      ask: "Have your stools been black and tarry?"
+    rectal_bleeding:
+      label: Blood in the stool
+      ask: "Have you passed fresh blood from the back passage?"
+    diarrhoea:
+      label: Diarrhoea
+      ask: "Do you have loose motions?"
+    constipation_absolute:
+      label: No stool and no wind
+      ask: "Have you passed neither stool nor wind?"
+    heartburn_after_meals:
+      label: Heartburn after meals
+      ask: "Do you get burning behind the breastbone after meals?"
+    jaundice:
+      label: Yellow eyes or skin
+      ask: "Have your eyes or skin turned yellow?"
+    stool_pale_urine_dark:
+      label: Pale stools, dark urine
+      ask: "Have your stools become pale, and your urine dark?"
+
+  # === genitourinary =========================================================
+  genitourinary:
+    dysuria:
+      label: Burning on passing urine
+      ask: "Does it burn when you pass urine?"
+    urinary_frequency:
+      label: Passing urine often
+      ask: "Are you passing urine more often than usual?"
+    flank_pain:
+      label: Loin or flank pain
+      ask: "Do you have pain in your side or back, below the ribs?"
+    haematuria:
+      label: Blood in the urine
+      ask: "Have you seen blood in your urine?"
+    urinary_retention:
+      label: Cannot pass urine
+      ask: "Are you unable to pass urine even though your bladder feels full?"
+    urinary_incontinence_new:
+      label: New loss of bladder control
+      ask: "Have you started leaking urine without knowing?"
+    faecal_incontinence_new:
+      label: New loss of bowel control
+      ask: "Have you lost control of your bowels?"
+    saddle_anaesthesia:
+      label: Numbness between the legs
+      ask: "Is the area between your legs, where you sit on a saddle, numb?"
+    scrotal_pain_sudden:
+      label: Sudden testicular pain
+      ask: "Did pain in the testicle start suddenly?"
+    scrotal_swelling:
+      label: Scrotal swelling
+      ask: "Is the scrotum swollen?"
+    groin_lump:
+      label: Lump in the groin
+      ask: "Is there a lump in your groin?"
+    groin_lump_irreducible:
+      label: Groin lump will not push back
+      ask: "Does the lump refuse to go back in when you press it?"
+
+  # === obstetric and gynaecological ==========================================
+  obstetric_gynae:
+    pregnancy_known_or_possible:
+      label: Pregnant, or could be
+      ask: "Are you pregnant, or could you be?"
+    missed_period:
+      label: Missed a period
+      ask: "Have you missed a period?"
+    pregnancy_over_20_weeks:
+      label: More than 20 weeks pregnant
+      ask: "Are you more than five months pregnant?"
+    recent_delivery:
+      label: Given birth recently
+      ask: "Have you given birth in the last six weeks?"
+    vaginal_bleeding:
+      label: Vaginal bleeding
+      ask: "Are you bleeding from the vagina?"
+    vaginal_bleeding_heavy:
+      label: Heavy vaginal bleeding
+      ask: "Are you soaking through pads?"
+    pelvic_pain_unilateral:
+      label: One-sided pelvic pain
+      ask: "Is the lower abdominal pain on one side only?"
+    shoulder_tip_pain:
+      label: Pain at the tip of the shoulder
+      ask: "Do you have pain at the very tip of your shoulder?"
+    swelling_of_face_or_hands:
+      label: Face or hands swollen
+      ask: "Have your face or hands become puffy?"
+
+  # === musculoskeletal and back ==============================================
+  musculoskeletal:
+    back_pain:
+      label: Back pain
+      ask: "Do you have back pain?"
+    back_pain_new_and_severe:
+      label: New severe back pain
+      ask: "Is this back pain new, and severe?"
+    leg_weakness_bilateral:
+      label: Both legs weak
+      ask: "Are both of your legs weak?"
+    sciatica_bilateral:
+      label: Pain down both legs
+      ask: "Does the pain shoot down both legs?"
+    joint_pain:
+      label: Joint pain
+      ask: "Do your joints hurt?"
+    joint_swelling:
+      label: Joint swelling
+      ask: "Are any of your joints swollen?"
+    muscle_aches_severe:
+      label: Severe body aches
+      ask: "Do your muscles and bones ache badly?"
+    chest_wall_tender:
+      label: Chest wall tender
+      ask: "Is the chest painful when you press on the bones or muscles?"
+
+  # === skin and soft tissue ==================================================
+  skin:
+    rash:
+      label: Rash
+      ask: "Do you have a rash?"
+    rash_non_blanching:
+      label: Rash that does not fade on pressure
+      ask: "(Examination) Does the rash stay when pressed with a glass?"
+    urticaria:
+      label: Hives or weals
+      ask: "Do you have raised itchy weals on your skin?"
+    lip_or_tongue_swelling:
+      label: Lip or tongue swelling
+      ask: "Are your lips or tongue swelling?"
+    skin_red_spreading:
+      label: Redness spreading quickly
+      ask: "Is the redness spreading, hour by hour?"
+    skin_crepitus_or_bullae:
+      label: Crackling under the skin, or blisters
+      ask: "(Examination) Is there crackling under the skin, or are blisters forming?"
+    skin_mottled_or_cold:
+      label: Skin mottled or cold
+      ask: "(Examination) Is the skin mottled, or cold and clammy?"
+    bleeding_gums_or_petechiae:
+      label: Bleeding gums or pinpoint spots
+      ask: "Are your gums bleeding, or do you have pinpoint red spots on the skin?"
+    pallor:
+      label: Pallor
+      ask: "(Examination) Is the patient pale?"
+    wound_or_puncture:
+      label: Recent wound or puncture
+      ask: "Have you had a cut, wound, or puncture recently?"
+
+  # === endocrine and metabolic ===============================================
+  endocrine_metabolic:
+    known_diabetes:
+      label: Known diabetes
+      ask: "Do you have diabetes?"
+    polyuria_and_polydipsia:
+      label: Passing lots of urine and very thirsty
+      ask: "Are you passing a lot of urine and feeling very thirsty?"
+    deep_sighing_breathing:
+      label: Deep sighing breathing
+      ask: "(Observation) Is the breathing deep and sighing?"
+    breath_smells_sweet:
+      label: Sweet-smelling breath
+      ask: "(Observation) Does the breath smell sweet or of acetone?"
+    insulin_or_meal_missed:
+      label: Missed insulin or a meal
+      ask: "Have you missed your insulin, your diabetes tablets, or a meal?"
+    symptoms_relieved_by_sugar:
+      label: Relieved by eating sugar
+      ask: "Did eating something sweet make it go away?"
+    tremor:
+      label: Tremor
+      ask: "Are your hands shaking?"
+    heat_intolerance:
+      label: Cannot tolerate heat
+      ask: "Do you feel hot when others around you are comfortable?"
+    known_thyroid_disease:
+      label: Known thyroid disease
+      ask: "Have you been told you have a thyroid problem?"
+    skin_hyperpigmentation:
+      label: Skin darkening
+      ask: "Has your skin, or the creases of your palms, darkened?"
+
+  # === psychiatric ===========================================================
+  psychiatric:
+    anxiety_or_panic_feeling:
+      label: Feeling of panic or dread
+      ask: "Did you feel a sudden sense of panic or dread?"
+    prior_panic_attacks:
+      label: Panic attacks before
+      ask: "Have you had panic attacks before, and did this feel the same?"
+    low_mood_or_hopelessness:
+      label: Low mood or hopelessness
+      ask: "Have you been feeling low, or hopeless?"
+    self_harm_intent:
+      label: Thoughts of self-harm
+      ask: "Have you had thoughts of harming yourself?"
+
+  # === risk factors, exposures, medications ==================================
+  # These are rarely volunteered and almost never asked in a 90-second consult.
+  # They are also what turns a benign-looking presentation dangerous, which is
+  # exactly the forgetting this product exists to interrupt.
+  risk_and_exposure:
+    immobility_or_long_journey:
+      label: Long journey or immobility
+      ask: "Have you had a long journey, or been off your feet for a few days?"
+    recent_surgery:
+      label: Surgery in the last six weeks
+      ask: "Have you had an operation in the last six weeks?"
+    previous_clot:
+      label: Previous clot in leg or lung
+      ask: "Have you ever had a clot in your leg or your lung?"
+    family_history_clot:
+      label: Family history of clots
+      ask: "Has anyone in your family had a clot in the leg or lung?"
+    family_history_sudden_death:
+      label: Sudden death in the family
+      ask: "Has anyone in your family died suddenly at a young age?"
+    known_cancer:
+      label: Known cancer
+      ask: "Have you been diagnosed with cancer?"
+    smoker:
+      label: Smokes
+      ask: "Do you smoke?"
+    alcohol_heavy:
+      label: Heavy alcohol use
+      ask: "Do you drink alcohol regularly, or heavily?"
+    known_hypertension:
+      label: Known high blood pressure
+      ask: "Have you been told you have high blood pressure?"
+    known_kidney_disease:
+      label: Known kidney disease
+      ask: "Have you been told you have a kidney problem?"
+    known_liver_disease:
+      label: Known liver disease
+      ask: "Have you been told you have a liver problem?"
+    immunosuppressed:
+      label: Immunosuppressed
+      ask: "Are you on steroids, chemotherapy, or any medicine that lowers immunity?"
+    recent_travel_endemic_area:
+      label: Recent travel to an endemic area
+      ask: "Have you travelled recently, especially where malaria or dengue is common?"
+    mosquito_exposure:
+      label: Mosquito exposure
+      ask: "Have there been a lot of mosquitoes where you live or have been?"
+    tb_contact:
+      label: Contact with TB
+      ask: "Has anyone close to you been treated for tuberculosis?"
+    recent_viral_illness:
+      label: Recent viral illness
+      ask: "Did you have a cold, fever or flu-like illness in the last few weeks?"
+    recent_diarrhoeal_illness:
+      label: Recent diarrhoeal illness
+      ask: "Did you have loose motions in the last few weeks?"
+    known_allergy_exposure:
+      label: Exposure to a known allergen
+      ask: "Did this start soon after a food, a medicine, or a sting?"
+    unprotected_exposure_hiv_risk:
+      label: HIV exposure risk
+      ask: "Have you had unprotected sex with a new partner, or shared needles?"
+    animal_bite_or_scratch:
+      label: Animal bite or scratch
+      ask: "Have you been bitten or scratched by an animal?"
+    immunisation_uncertain:
+      label: Immunisation status uncertain
+      ask: "Are your tetanus injections up to date?"
+    fish_or_seafood_meal:
+      label: Recent fish or seafood
+      ask: "Did you eat fish or seafood shortly before this started?"
+    possible_ingestion_or_overdose:
+      label: Possible ingestion or overdose
+      ask: "Have you swallowed any tablets, chemicals or pesticide?"
+
+  medications:
+    on_oral_contraceptive:
+      label: On the combined pill
+      ask: "Are you taking the contraceptive pill?"
+    on_hormone_therapy:
+      label: On hormone therapy
+      ask: "Are you on any hormone treatment?"
+    on_nsaids:
+      label: On painkillers of the NSAID type
+      ask: "Have you been taking painkillers such as ibuprofen or diclofenac?"
+    on_steroids_long_term:
+      label: On long-term steroids
+      ask: "Have you been on steroid tablets for a long time?"
+    steroids_recently_stopped:
+      label: Steroids recently stopped
+      ask: "Did you stop steroid tablets recently?"
+    on_anticoagulant:
+      label: On blood thinners
+      ask: "Are you taking any blood-thinning medicine?"
+    on_insulin_or_sulfonylurea:
+      label: On insulin or sulfonylurea
+      ask: "Are you on insulin, or tablets that lower blood sugar?"
+    on_ace_inhibitor_or_potassium_sparing:
+      label: On ACE inhibitor or potassium-sparing diuretic
+      ask: "Are you taking medicines for blood pressure or the heart such as ramipril or spironolactone?"
+    on_antipsychotic_or_antiemetic:
+      label: On antipsychotic or anti-sickness medicine
+      ask: "Have you been given any medicine for nausea, or for a mental health condition?"
+    new_medicine_started:
+      label: New medicine started recently
+      ask: "Have you started any new medicine recently?"
+
+# ============================================================================
+# INVESTIGATIONS — human-readable labels for the exclusion tokens.
+#
+# severity.yaml's excluded_by lists tokens like `ctpa` and `d_dimer`. They are
+# NOT findings: nobody asks a patient whether they have a CTPA. They are
+# actions the clinician records, and every one of them needs a label before
+# the panel can print "Mark Pulmonary embolism as ruled out? (CT pulmonary
+# angiogram, D-dimer, documented Wells score)".
+#
+# Kept here, next to the vocabulary, so there is one place that names things
+# and so selftest.py can assert that no exclusion token is unlabelled. An
+# unlabelled token would render as a raw identifier in the one prompt in this
+# system that removes a warning from the screen.
+# ============================================================================
+investigations:
+  ecg: "ECG"
+  troponin: "Troponin"
+  echo: "Echocardiogram"
+  ted_echo: "Transoesophageal echo"
+  tmt: "Treadmill test"
+  bnp: "BNP"
+  ct_angiogram_chest: "CT angiogram, chest"
+  ct_angiogram_abdomen: "CT angiogram, abdomen"
+  ctpa: "CT pulmonary angiogram"
+  d_dimer: "D-dimer"
+  wells_documented: "Documented Wells score"
+  doppler_leg: "Leg Doppler"
+  doppler_scrotum: "Scrotal Doppler"
+  cxr: "Chest X-ray"
+  erect_cxr: "Erect chest X-ray"
+  ct_chest: "CT chest"
+  ct_head: "CT head"
+  ct_abdomen: "CT abdomen"
+  ct_soft_tissue: "CT soft tissue"
+  mri_brain: "MRI brain"
+  mri_spine: "MRI spine"
+  abdominal_xray: "Abdominal X-ray"
+  neck_xray: "Neck X-ray"
+  usg_abdomen: "Ultrasound abdomen"
+  usg_pelvis: "Ultrasound pelvis"
+  usg_pelvis_doppler: "Pelvic Doppler ultrasound"
+  usg_eye: "Ocular ultrasound"
+  lumbar_puncture: "Lumbar puncture"
+  laryngoscopy: "Laryngoscopy"
+  endoscopy: "Upper GI endoscopy"
+  fundoscopy: "Fundoscopy"
+  tonometry: "Eye pressure (tonometry)"
+  peak_flow: "Peak flow"
+  abg: "Arterial blood gas"
+  cbc: "Complete blood count"
+  haemoglobin: "Haemoglobin"
+  platelet_count: "Platelet count"
+  blood_glucose: "Blood glucose"
+  serum_ketones: "Serum ketones"
+  serum_potassium: "Serum potassium"
+  serum_sodium: "Serum sodium"
+  serum_electrolytes: "Serum electrolytes"
+  serum_creatinine: "Serum creatinine"
+  serum_urea: "Serum urea"
+  serum_cortisol: "Serum cortisol"
+  serum_lipase: "Serum lipase"
+  serum_amylase: "Serum amylase"
+  serum_ace: "Serum ACE"
+  lft: "Liver function tests"
+  thyroid_function_test: "Thyroid function tests"
+  lactate: "Lactate"
+  esr: "ESR"
+  crp: "CRP"
+  ana: "ANA"
+  anti_dsdna: "Anti-dsDNA"
+  ach_receptor_antibody: "Acetylcholine receptor antibody"
+  repetitive_nerve_stimulation: "Repetitive nerve stimulation"
+  nerve_conduction_study: "Nerve conduction study"
+  temporal_artery_biopsy: "Temporal artery biopsy"
+  blood_culture: "Blood culture"
+  urinalysis: "Urine dipstick"
+  urine_culture: "Urine culture"
+  urine_hcg: "Urine pregnancy test"
+  urine_protein: "Urine protein"
+  toxicology_screen: "Toxicology screen"
+  hiv_test: "HIV test"
+  widal: "Widal test"
+  ns1_antigen: "Dengue NS1 antigen"
+  peripheral_smear: "Peripheral smear"
+  rapid_malaria_antigen: "Rapid malaria antigen"
+  sputum_afb: "Sputum for AFB"
+  cbnaat: "CBNAAT / GeneXpert"
+  qsofa_documented: "Documented qSOFA"
+  bp_documented: "Recorded blood pressure"
+  auscultation_documented: "Documented chest auscultation"
+  clinical_exam_documented: "Documented clinical examination"
+  immunisation_history_documented: "Documented immunisation history"
+  exposure_history_documented: "Documented exposure history"
+  observed_seizure_cessation: "Observed cessation of seizure"
+  observed_response_to_adrenaline: "Observed response to adrenaline"
+  observed_response_to_antihistamine: "Observed response to antihistamine"
+  observed_response_to_anticholinergic: "Observed response to anticholinergic"
+  needle_decompression_response: "Response to needle decompression"

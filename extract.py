@@ -1,331 +1,150 @@
+"""extract.py — the translator.
+
+Turns this patient's consultation transcript, plus whatever documents they
+brought, into finding ids from findings.yaml. Three-valued:
+
+    {id: True}   finding confirmed PRESENT
+    {id: False}  finding EXPLICITLY DENIED
+    id omitted   nobody discussed it — UNKNOWN
+
+THE ONE HARD RULE: never guess False for something nobody asked about. An
+unasked symptom is not a denied symptom. Marking undiscussed findings absent
+systematically penalises exactly the conditions Can't-Miss exists to surface
+— the panel would look confident while quietly suppressing the diagnoses it
+is there to catch. This file's entire job is preserving that three-way
+distinction.
+
+EXTRACTION NEVER SEES THE CANDIDATE LIST. This module receives a transcript
+and a vocabulary, and nothing else. propose.py, which does the reasoning,
+receives findings and never sees the transcript. Collapsing the two into one
+call makes the model extract findings *because* they fit a condition it is
+already considering — an earlier provider fabricated an immobility finding on
+a transcript that never mentioned immobility, and this project switched
+providers over that failure. The separation is the fix; do not merge them.
+
+RE-EXTRACTION IS OVER THE WHOLE THING, ALWAYS. A consult is not one input —
+it is a recording, then a document, then another recording, landing minutes
+apart. Every update re-runs this over the FULL accumulated transcript and
+document text, never incrementally over just the new chunk. A later statement
+can correct an earlier one ("no, it's the right calf, not the left"), and only
+a model seeing both can resolve that; merging per-chunk findings would keep
+both as true. This costs a full call per update. Pay it.
+
+Returned ids are validated against the vocabulary and unknown ones dropped.
+The model is instructed to use only ids from the catalog, but "instructed to"
+is not "guaranteed to", and a fabricated id would flow downstream as a
+finding no clinician could trace to anything the patient said.
 """
-extract.py — the translator. Turns a consultation transcript (plus, if
-available, prescription/document text) into DDXPlus evidence codes:
-{code: True} for findings confirmed present, {code: False} for findings
-EXPLICITLY denied, code omitted entirely if not discussed at all.
 
-day-plan.md step 5's one hard rule: never guess False for anything not
-discussed. Scoring an undiscussed symptom as absent multiplies
-P(not-e | pathology) for every symptom nobody asked about, which
-systematically penalises exactly the conditions Can't-Miss exists to
-surface — the eval would still look fine while the panel quietly suppresses
-the diagnoses it's supposed to catch. This file's whole job is to preserve
-that three-way distinction; get it wrong and engine.py's math is still
-correct but is being fed a lie.
-
-Uses Sarvam's sarvam-105b (OpenAI-compatible-shaped chat completions, via
-the sarvamai SDK already used by capture.py) with FORCED tool-calling for
-structured output. Needs SARVAM_API_KEY in .env — same key capture.py
-already uses, no new credential.
-
-PROVIDER HISTORY (each switch driven by a real, verified problem with the
-previous one — see git log for the full trail, and extract.py.groq-
-batched-wip for the untouched Groq attempt, kept as reference not deleted):
-  Anthropic (planned, never had a key)
-  -> Gemini (google-genai): gemini-3.7-flash worked but 503'd
-     intermittently on the full 223-code catalog, and this key's free
-     tier caps at a plain 20 requests/DAY for it — too low to be usable.
-     gemini-3.1-flash-lite and gemini-3.5-flash-lite were both tried as
-     cheaper alternatives and REJECTED: verified via real side-by-side
-     runs that both fabricate PRESENT findings for topics never discussed
-     at all (pregnancy status, family psychiatric history, inability to
-     get up for 3+ days — none mentioned anywhere in the test transcript).
-  -> Groq (openai/gpt-oss-20b, batched): switched for better rate limits,
-     but this key's Groq org caps EVERY text model at a shared 8000
-     tokens/minute ceiling — confirmed identically across 3 unrelated
-     model families, so no model choice fixes it. Had to split the
-     223-code catalog into 4 size-bounded batches (greedy bin-packed by
-     serialized JSON size, since 4 of the 223 codes — the body-location
-     multi-choice codes — are ~20x the size of a typical code and blow
-     out a fixed-count split) to fit under the cap at all. Left
-     unfinished (test run hit intermittent 400 "tool_use_failed" on one
-     batch, not yet fully debugged) when the decision was made to try
-     Sarvam instead — that code is preserved untouched in
-     extract.py.groq-batched-wip in case Groq becomes worth returning to
-     (e.g. with a Dev Tier upgrade).
-  -> Sarvam (sarvam-105b): sarvam-105b's context window is large enough
-     (128K, per the model card) that the full 223-code catalog + system
-     prompt + transcript fits in ONE request — no batching/merging logic
-     needed, unlike Groq. Also already the provider capture.py uses for
-     STT/vision/TTS, so no new API key.
-
-PROMOTED to active extract.py 2026-08-21 after re-running the exact
-fabrication check that rejected the Gemini variants (same
-demo/mock_hi-IN/mock_consult_lines.json transcript): came back clean, 5/5
-codes traced to something actually said, no E_167/E_29/E_110-style
-invention. Side by side, the still-active-at-the-time Gemini flash-lite
-fabricated E_110 on this identical input in the same run.
-
-The real installed sarvamai client was introspected before any code was
-written — chat.completions is a plain bound METHOD (not a
-client.chat.completions.create() sub-resource the way OpenAI/Groq/Gemini
-are shaped), confirmed via inspect.signature(), and its real request/
-response TYPES were read directly from the installed package source
-(sarvamai/requests/chat_completion_tool.py, .../function_definition.py,
-sarvamai/types/chat_completion_message_tool_call.py,
-.../function_call.py — not docs, not guessed):
-    client.chat.completions(model="sarvam-105b", messages=[...],
-        tools=[{"type": "function", "function": {"name": ..., "description":
-        ..., "parameters": {...}}}],
-        tool_choice={"type": "function", "function": {"name": "record_evidence"}})
-    -> resp.choices[0].message.tool_calls[0].function.name / .arguments
-       (.arguments is a JSON STRING, confirmed both from the FunctionCall
-       type's `arguments: str` field AND a real live call — same as
-       Groq's shape, unlike Gemini's already-parsed dict).
-sarvam-105b (not sarvam-105b-conversations — that variant is tuned for
-real-time voice, not one-shot structured extraction, per the model docs).
-The default SarvamAI() client timeout is too short for this model's
-real latency (a real call hit httpx.ReadTimeout at the default) — the
-client below passes timeout=90.0 explicitly, confirmed against the
-constructor's real signature, not assumed.
-
-Response includes a `reasoning_content` field (the model narrates its
-reasoning before the tool call, observed on a real response) — irrelevant
-to extract()'s parsing since only tool_calls[0].function.arguments is
-read, but worth knowing if debugging: max_tokens needs enough headroom
-for that reasoning trace plus the final tool call on the full catalog, not
-just the JSON output size.
-
-KNOWN GAP, confirmed not a prompt-wording problem: 6 of DDXPlus's 15
-categorical/multi-choice codes (E_59, E_56, E_58, E_134, E_132, E_136 —
-onset-speed and intensity-style 0-10 scales) ship with an EMPTY
-value_meaning in release_evidences.json — no V_ labels at all, just bare
-integers. _load_catalog() faithfully passes that through as an empty
-"values" mapping, so the model has no listed option to match against and
-correctly leaves these codes out per rule 3, even when the transcript
-clearly discusses onset speed (e.g. "started suddenly"). Checked directly
-against the raw JSON, not assumed — this is a real dataset gap, not
-something extract.py's prompt can word its way around; a fix would mean
-hand-authoring a value_meaning mapping for these 6 codes, out of scope for
-today.
-
-Usage:
-    from extract import extract
-    evidence = extract(transcript_text, doc_text)
-    # -> {"E_66": True, "E_100": True, "E_55=V_101": True, "E_91": False, ...}
-"""
-import hashlib
 import json
-import os
-import time
-from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv()
+import llm
+import vocabulary
 
-import httpx
-from sarvamai import SarvamAI
-from sarvamai.core.api_error import ApiError
+SYSTEM_PROMPT = """You are a clinical scribe. You read a consultation \
+transcript and any documents the patient brought, and you record which \
+findings from a fixed catalog were actually discussed.
 
-MODEL = os.environ.get("SARVAM_CHAT_MODEL", "sarvam-105b")
-# ^ Not sarvam-105b-conversations — that variant is tuned for real-time
-# voice turns, not one-shot structured extraction over a 223-code catalog.
+You are NOT diagnosing. You are NOT deciding what matters. Another system \
+does that, and it never sees this transcript. Your only job is to report \
+faithfully what was said.
 
-# Same disk-cache pattern as capture.py's STT/OCR results (hash of the
-# real call inputs -> cached JSON), extended here to extraction. Before
-# this, extract() had NO cache at all — every /analyze call, including
-# re-running the exact same transcript twice (a UI retry, an eval script
-# iterating on the same test case) burned a fresh Sarvam call. temperature
-# and seed aren't in the hash: extract() always passes the same fixed
-# 0.0/0, so they can't vary the result; MODEL is included because
-# SARVAM_CHAT_MODEL is env-overridable and a different model deserves a
-# different cache entry.
-CACHE_DIR = Path("cache")
-CACHE_DIR.mkdir(exist_ok=True)
+THREE-VALUED. Every finding is in exactly one of three states:
+  PRESENT  — the patient described it, or a document shows it.
+  ABSENT   — the patient was asked and denied it, or explicitly volunteered \
+that they do not have it.
+  UNKNOWN  — anything else. This is the default and it covers most of the \
+catalog on most consultations.
 
+Report present findings and absent findings. Report NOTHING for unknown ones.
 
-def _hash(*parts):
-    h = hashlib.sha256()
-    for p in parts:
-        h.update(p if isinstance(p, bytes) else str(p).encode())
-    return h.hexdigest()[:24]
+THE MISTAKE THAT MATTERS MOST: marking something ABSENT because it was not \
+mentioned. If nobody in the transcript raised the topic of leg swelling, leg \
+swelling is UNKNOWN, not absent. "Not mentioned" and "denied" are completely \
+different pieces of information and confusing them is the single worst error \
+you can make here. When in doubt, leave it out.
 
+THE SECOND MISTAKE: recording a finding because it fits a pattern you \
+recognise. If a patient describes sudden breathlessness you may find \
+yourself reaching for the rest of a picture — pleuritic pain, a swollen \
+calf, a recent flight. Record only what is in the text. You do not know what \
+condition anyone is considering, and that is deliberate.
 
-_client = None
-
-
-def _client_singleton():
-    global _client
-    if _client is None:
-        # timeout=60.0, not the original 90.0: real observed successful
-        # calls have run 32-50s (measured directly, not estimated), so 60s
-        # still gives headroom above that before treating a call as dead.
-        # Paired with max_retries=3 below, not the original 5 — see that
-        # function's docstring for the worst-case-latency math this fixes.
-        _client = SarvamAI(api_subscription_key=os.environ["SARVAM_API_KEY"], timeout=60.0)
-    return _client
-
-
-class _ToolCallMissing(Exception):
-    """Raised when a forced-tool-call response comes back with no
-    tool_calls anyway — observed live 2026-08-21 on sarvam-105b (a real
-    502 in main.py's /assess, not a hypothetical): resp.choices[0].message
-    .tool_calls was empty despite tool_choice forcing record_evidence.
-    Same transient shape extract.py.groq-batched-wip documented on Groq's
-    gpt-oss-20b ("tool_use_failed", confirmed flaky by retrying the exact
-    same input and having it succeed) — treated the same way here, as
-    retryable, not a hard failure on the first occurrence."""
-
-
-def _with_retry(fn, *args, max_retries=3, **kwargs):
-    """Retries on 429/5xx and on a forced-tool-call response coming back
-    without a tool_calls entry (see _ToolCallMissing) — the same
-    transient-failure shape seen on every provider this project has used
-    so far (Sarvam's own STT/vision calls in capture.py, Gemini, Groq).
-
-    max_retries=3, not the original 5, and the client timeout above is
-    60s, not 90s: with the old numbers, a genuinely-down Sarvam (not
-    flaky-once, actually down) made a single extract() call retry for up
-    to 5 * 90s of timeouts plus 2+4+8+16=30s of backoff sleep between them
-    — near 8 minutes before finally raising, inside a 2-minute consult.
-    3 * 60s + 2+4=6s of backoff is a ~3 minute worst case: still enough
-    retries to ride out a real transient blip, but fails fast enough to
-    fall back to something else instead of the whole demo silently hanging.
-
-    If the caller passed a fixed `seed` (extract() does, for reproducible
-    evidence extraction), every RETRY bumps it by the attempt number.
-    Observed live 2026-08-21: with temperature=0 AND a fixed seed, a
-    _ToolCallMissing response is fully deterministic — every retry sent
-    the byte-identical request and got the byte-identical empty-tool-calls
-    response back, 5 times, guaranteed failure. The seed only needs to
-    move on retry; attempt 0 still uses the caller's original seed, so a
-    normal successful call is unaffected and stays reproducible."""
-    delay = 2.0
-    base_seed = kwargs.get("seed")
-    for attempt in range(max_retries):
-        if base_seed is not None and attempt > 0:
-            kwargs["seed"] = base_seed + attempt
-        try:
-            resp = fn(*args, **kwargs)
-            if not getattr(resp.choices[0].message, "tool_calls", None):
-                raise _ToolCallMissing("response had no tool_calls despite forced tool_choice")
-            return resp
-        # httpx.TimeoutException/NetworkError observed LIVE 2026-08-21, twice
-        # in a row, mid-demo: "[WinError 10060] A connection attempt failed
-        # ..." and "The read operation timed out" (the client's timeout=90.0
-        # firing). Both are the sarvamai SDK's underlying httpx client
-        # raising unwrapped -- not an ApiError, so the except clause below
-        # never caught them and the call failed hard on the FIRST attempt,
-        # no retry at all, despite being exactly the kind of transient
-        # network hiccup the other exception types here already retry.
-        except (ApiError, _ToolCallMissing, httpx.TimeoutException, httpx.NetworkError) as e:
-            status = getattr(e, "status_code", None) if isinstance(e, ApiError) else None
-            retryable = (
-                isinstance(e, (_ToolCallMissing, httpx.TimeoutException, httpx.NetworkError))
-                or status in (429, 500, 502, 503, 504)
-            )
-            if retryable and attempt < max_retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                continue
-            raise
-    raise RuntimeError("unreachable")  # pragma: no cover
-
-
-_EVIDENCE_PATH = Path(__file__).parent / "ddxplus" / "release_evidences.json"
-_catalog_cache = None
-
-
-def _load_catalog():
-    """Compact, English-only view of release_evidences.json for the
-    prompt — drops French fields and unused metadata. ~10k tokens for all
-    223 codes as of this dataset, checked directly, not estimated."""
-    global _catalog_cache
-    if _catalog_cache is not None:
-        return _catalog_cache
-    raw = json.loads(_EVIDENCE_PATH.read_text(encoding="utf-8"))
-    catalog = []
-    for code, ev in raw.items():
-        entry = {"code": code, "question": ev["question_en"], "type": ev["data_type"]}
-        # B = binary, C = categorical (one value from a small fixed set,
-        # e.g. speed of onset), M = multi-choice (e.g. location, travel region)
-        if ev["data_type"] in ("C", "M"):
-            entry["values"] = {v: m.get("en", v)
-                                for v, m in ev.get("value_meaning", {}).items()}
-            entry["default_value"] = ev.get("default_value")
-        catalog.append(entry)
-    _catalog_cache = catalog
-    return catalog
-
-
-SYSTEM_PROMPT = """You extract structured clinical evidence codes from a \
-doctor-patient consultation transcript and, if provided, prescription or \
-document text — strictly for a differential-diagnosis engine that expects \
-DDXPlus evidence codes as input.
-
-Rules, in order of importance:
-
-1. THREE-VALUED LOGIC. For each code in the catalog, decide: PRESENT (the \
-text affirmatively describes this finding), ABSENT (the text explicitly \
-denies or rules this out — "no fever", "never smoked"), or UNDISCUSSED \
-(anything not clearly one of those two). Only ever record PRESENT or \
-ABSENT. Never guess, infer, or default to ABSENT just because something \
-wasn't mentioned — leave it out of both lists entirely. This is the single \
-most important rule: a wrongly-guessed ABSENT silently penalises exactly \
-the diagnoses that would have caused that symptom.
-
-2. Binary ("B" type) codes: present/absent, no value needed.
-
-3. Categorical/multi-choice ("C"/"M" type) codes: only record as present \
-if a specific listed value clearly matches what was said (match against \
-the code's "values" mapping). If the topic is discussed but no listed \
-value clearly fits, leave it out rather than guessing the closest one. \
-NEVER record a code's own default_value as present — the default means \
-"no finding", not a finding; recording it would be indistinguishable from \
-a real finding and would corrupt the evidence the same way a wrong ABSENT \
-guess would.
-
-4. MEDICATION NAMES ARE FACTS, NOT INFERENCE. If document text (a \
-prescription, blister strip, medication list) names a specific drug, \
-match it to the well-established pharmacological class that drug belongs \
-to — this is reading what's written, the same way you'd match a listed \
-value for a categorical code (rule 3), not clinical inference about the \
-patient's condition. Example: a blister strip listing "Ethinylestradiol" \
-and/or "Levonorgestrel" states the patient is taking a combined hormonal \
-contraceptive; record the "currently take hormones" code PRESENT on that \
-basis alone. This does NOT extend to inferring a diagnosis, symptom, or \
-risk factor the text never names — only to identifying what a named, \
-already-stated substance actually is.
-
-5. Beyond matching a named substance to its class (rule 4), only extract \
-what the given text actually states. Do not use outside medical knowledge \
-to infer findings the text didn't mention, even if they seem clinically \
-likely. Do not invent a finding just because it seems plausible or common \
-for the presenting complaint — if it isn't in the text, it does not go in \
-present OR absent.
-
-6. When genuinely uncertain whether to record something, leave it out. \
-Omission is always safe here (it becomes UNKNOWN, correctly excluded from \
-the likelihood); a wrong guess is not."""
-
+RULES
+- Use ONLY ids that appear in the catalog. Never invent an id.
+- Documents count as evidence. A photographed prescription or blister strip \
+naming a drug establishes that the patient takes that drug, even if they \
+never said so out loud. Read the drug name and map it to the right finding \
+— a strip of desogestrel with ethinylestradiol is a combined oral \
+contraceptive.
+- Things said in passing count. A long journey mentioned while answering a \
+question about something else is still a long journey.
+- Third parties do not count. "My sister gets anxiety" is not a finding \
+about this patient.
+- Hypotheticals and reassurance do not count. A doctor saying "it might be \
+acidity" is not the patient reporting heartburn.
+- A finding marked (Examination) or (Observation) is recorded only if the \
+clinician actually states that finding during the consultation. Do not infer \
+examination findings from symptoms.
+- If two findings are opposites and the patient described one, you may mark \
+the other absent — sudden onset described means gradual onset absent. Only \
+do this when the transcript genuinely settles it.
+- If the transcript contains no clinical content at all, record nothing. An \
+empty result is a correct and expected answer."""
 
 _TOOL = {
     "type": "function",
     "function": {
-        "name": "record_evidence",
-        "description": "Record which DDXPlus evidence codes are present or explicitly absent in the given text.",
+        "name": "record_findings",
+        "description": (
+            "Record the findings actually discussed in this consultation. "
+            "Omit anything nobody raised — omission means UNKNOWN, which is "
+            "different from absent and is the correct answer for most of "
+            "the catalog on most consultations."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "present": {
                     "type": "array",
-                    "description": 'Findings confirmed present. Include "value" (a V_ code) only for type C/M codes.',
+                    "description": "Findings the patient described, or a document shows.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "code": {"type": "string", "description": "e.g. E_66"},
-                            "value": {"type": "string", "description": "V_ code, only for C/M type codes"},
+                            "id": {
+                                "type": "string",
+                                "description": "A finding id, exactly as it appears in the catalog.",
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": (
+                                    "The words from the transcript or document "
+                                    "that establish this. Quote them; do not "
+                                    "paraphrase. If you cannot quote anything, "
+                                    "the finding does not belong here."
+                                ),
+                            },
                         },
-                        "required": ["code"],
+                        "required": ["id", "evidence"],
                     },
                 },
                 "absent": {
                     "type": "array",
-                    "description": "Findings EXPLICITLY denied in the text (not just unmentioned). Type B codes only.",
+                    "description": (
+                        "Findings the patient was asked about and denied, or "
+                        "explicitly volunteered that they do not have. NOT "
+                        "findings that simply went unmentioned."
+                    ),
                     "items": {
                         "type": "object",
-                        "properties": {"code": {"type": "string"}},
-                        "required": ["code"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "evidence": {
+                                "type": "string",
+                                "description": "The words in which it was denied. Quote them.",
+                            },
+                        },
+                        "required": ["id", "evidence"],
                     },
                 },
             },
@@ -335,98 +154,87 @@ _TOOL = {
 }
 
 
-def extract(transcript, doc_text=""):
-    """transcript: a string, OR a list of utterance dicts (each needs some
-    combination of speaker/text keys — see the normalization below) such
-    as web/index.html's UTT constants or capture.transcribe()'s
-    diarized_transcript.entries.
-    doc_text: str — e.g. the "text" field from capture.read_image()'s
-    return value. Optional; pass "" if there's no document.
-
-    Returns {code: True} / {"CODE=VALUE": True} for present findings,
-    {code: False} for explicitly denied findings — matching the format
-    demo_case.py's PRESENTING/WITH_RECORDS/ANSWERED dicts use. Codes not
-    discussed are omitted entirely.
-
-    ONE call, full catalog — sarvam-105b's context window fits it, unlike
-    Groq's org-wide 8000 TPM cap which forced batching (see module
-    docstring's PROVIDER HISTORY).
-    """
+def _flatten(transcript):
+    """Accepts a plain string, or a list of utterance dicts as returned by
+    capture.transcribe()'s diarized entries."""
     if isinstance(transcript, (list, tuple)):
         lines = []
         for u in transcript:
             speaker = u.get("speaker") or u.get("w") or "?"
             text = u.get("text") or u.get("transcript") or u.get("e") or u.get("orig") or ""
             lines.append(f"{speaker}: {text}")
-        transcript = "\n".join(lines)
+        return "\n".join(lines)
+    return transcript or ""
 
-    cpath = CACHE_DIR / f"extract_{_hash(MODEL, transcript, doc_text)}.json"
-    if cpath.exists():
-        return json.loads(cpath.read_text(encoding="utf-8"))
 
-    catalog = _load_catalog()
-    client = _client_singleton()
+def extract(transcript, doc_text=""):
+    """-> ({finding_id: True|False}, {finding_id: "quoted evidence"})
 
-    user_content = (
-        f"EVIDENCE CATALOG (JSON array, {len(catalog)} codes):\n"
-        f"{json.dumps(catalog, ensure_ascii=False)}\n\n"
-        f"TRANSCRIPT:\n{transcript}\n\n"
-        f"DOCUMENT TEXT (prescription/blister strip OCR — may be empty):\n{doc_text or '(none)'}\n\n"
-        "Call record_evidence with every code you can confidently classify "
-        "as present or absent per the rules. Leave everything else out."
-    )
+    The second return value is the quote that justifies each finding. It is
+    not decoration: with no dataset and no eval, a clinician being able to
+    trace a finding back to the words that produced it is a real part of the
+    safety net. It is also how a fabricated finding gets caught — a model
+    that cannot quote anything for a finding it recorded has invented it.
+    """
+    transcript = _flatten(transcript)
+    doc_text = doc_text or ""
 
-    resp = _with_retry(
-        client.chat.completions,
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        tools=[_TOOL],
-        tool_choice={"type": "function", "function": {"name": "record_evidence"}},
-        # Observed live 2026-08-21: with no sampling params set, three back-
-        # to-back calls on the IDENTICAL transcript+doc_text returned
-        # different evidence sets (one run dropped E_16 "anxious" and the
-        # specific calf-swelling location value entirely), which flips
-        # engine.py's abstain decision run to run independent of anything
-        # actually in the input. temperature=0 + a fixed seed makes the
-        # same input produce the same extraction, not a fresh dice roll
-        # per call — confirmed real params via inspect.signature(), not
-        # guessed (see module docstring).
-        temperature=0.0,
-        seed=0,
-        max_tokens=4096,
-    )
+    # Nothing to extract from. Skip the call entirely rather than asking a
+    # model to find findings in an empty string — it costs money, takes
+    # seconds, and invites invention.
+    if not transcript.strip() and not doc_text.strip():
+        return {}, {}
 
-    # .arguments is a JSON STRING here (unlike Gemini's already-parsed
-    # dict — confirmed via a real call and the FunctionCall type source,
-    # see module docstring).
-    tool_call = resp.choices[0].message.tool_calls[0]
-    parsed = json.loads(tool_call.function.arguments)
+    cpath = llm.CACHE_DIR / f"extract_{llm.content_hash(llm.MODEL, transcript, doc_text)}.json"
 
-    evidence = {}
-    for item in parsed.get("present", []):
-        code = item["code"]
-        value = item.get("value")
-        key = f"{code}={value}" if value else code
-        evidence[key] = True
-    for item in parsed.get("absent", []):
-        evidence[item["code"]] = False
+    def produce():
+        catalog = vocabulary.catalog_for_prompt()
+        user_content = (
+            f"FINDING CATALOG ({len(catalog)} findings). Use only these ids:\n"
+            f"{json.dumps(catalog, ensure_ascii=False)}\n\n"
+            f"TRANSCRIPT:\n{transcript}\n\n"
+            f"DOCUMENTS (prescriptions, blister strips, reports — may be empty):\n"
+            f"{doc_text or '(none)'}\n\n"
+            "Call record_findings. Include a finding only if you can quote the "
+            "words that establish it. Leave everything else out."
+        )
+        return llm.call_tool(SYSTEM_PROMPT, user_content, _TOOL)
 
-    cpath.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
-    return evidence
+    parsed = llm.cached(cpath, produce)
+
+    findings, quotes, dropped = {}, {}, []
+    for state, key in ((True, "present"), (False, "absent")):
+        for item in parsed.get(key) or []:
+            fid = (item.get("id") or "").strip()
+            if fid not in vocabulary.FINDINGS:
+                # Not in the vocabulary, so nothing downstream could match it
+                # across turns even if it were real. Dropped, and reported —
+                # a run that drops a lot of ids means the catalog is missing
+                # something the model keeps reaching for.
+                dropped.append(fid)
+                continue
+            findings[fid] = state
+            quotes[fid] = (item.get("evidence") or "").strip()
+
+    if dropped:
+        print(f"extract: dropped {len(dropped)} id(s) not in findings.yaml: {sorted(set(dropped))}")
+
+    return findings, quotes
 
 
 if __name__ == "__main__":
     import sys
+    from pathlib import Path
+
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     if len(sys.argv) < 2:
-        print("usage: python extract.py <transcript-text-file> [doc-text-file]")
+        print("usage: python extract.py <transcript-file> [document-file]")
         sys.exit(1)
-    transcript_text = Path(sys.argv[1]).read_text(encoding="utf-8")
-    doc_text = Path(sys.argv[2]).read_text(encoding="utf-8") if len(sys.argv) > 2 else ""
-    result = extract(transcript_text, doc_text)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    _t = Path(sys.argv[1]).read_text(encoding="utf-8")
+    _d = Path(sys.argv[2]).read_text(encoding="utf-8") if len(sys.argv) > 2 else ""
+    _f, _q = extract(_t, _d)
+    for _fid, _state in sorted(_f.items(), key=lambda kv: (not kv[1], kv[0])):
+        print(f"  {'present' if _state else 'absent ':>7}  {vocabulary.label(_fid):<38}  {_q.get(_fid, '')!r}")
+    print(f"\n{len(_f)} finding(s); everything else is UNKNOWN.")

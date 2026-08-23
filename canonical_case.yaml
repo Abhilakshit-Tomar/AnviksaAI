@@ -1,0 +1,169 @@
+# canonical_case.yaml — the one case that defines what correct output means.
+#
+# There is no dataset, no eval, and no measured accuracy anywhere in this
+# project. This file is the closest thing to a regression test that exists:
+# a single consultation, written out in full, with what the panel MUST do
+# with it stated explicitly.
+#
+# It replaces demo_case.py and contract.json, which were written in DDXPlus
+# evidence codes and went away with the dataset.
+#
+# THIS IS NOT A DEMO SCRIPT. Nothing renders from it, no walkthrough plays it
+# back, and no pre-fed state is loaded into the UI from it. The last build had
+# exactly that and it repeatedly showed canned output during live use. This
+# file is read by tests and by a human; it never reaches the screen.
+#
+# WHY THIS CASE. A 34-year-old woman with sudden chest tightness and
+# breathlessness, who mentions a long journey in passing and hands over a
+# strip of pills without comment, is the shape of the failure this product
+# exists for. The presentation reads as anxiety. The doctor is already
+# thinking anxiety. Pulmonary embolism is not hidden — it is simply spread
+# across three things said at three different moments, and holding all three
+# at once, with a queue outside, is what does not happen.
+#
+# Two of the three arrive as ambient input nobody would think to type into a
+# chat: the journey is buried mid-sentence in an answer about something else,
+# and the contraceptive is on a blister strip, not in anything the patient
+# says. That is the argument for this product in one case.
+#
+# ANYTHING THAT FAILS TO SURFACE PULMONARY EMBOLISM HERE IS BROKEN, whatever
+# else it gets right.
+
+version: 1
+
+case:
+  id: pe_masquerading_as_panic
+  summary: >-
+    34F, sudden chest tightness and breathlessness, photographed strip reveals
+    a combined oral contraceptive, long journey mentioned in passing. The
+    doctor is thinking panic attack.
+
+# --- what actually arrives, in the order it arrives ------------------------
+# Evidence lands in pieces. Extraction re-runs over the WHOLE accumulation
+# each time, never incrementally over just the new chunk — the ordering here
+# exists to test that, not for playback.
+input:
+
+  # The recording, as saaras-v3 would return it after diarisation. Written in
+  # English; a real Indian OPD consult is code-mixed and capture.transcribe()
+  # returns both the original and an English gloss. Extraction reads the gloss.
+  transcript: |
+    Doctor: Come, sit. What's the problem?
+    Patient: Doctor, since this morning my chest feels tight. Like something
+      is pressing on it. And I can't get a full breath.
+    Doctor: Since this morning only? Any pain?
+    Patient: Not pain exactly. Tightness. It started suddenly, I was just
+      sitting and it came.
+    Doctor: Any fever, cough?
+    Patient: No fever, no cough.
+    Doctor: Do you get tense, anxious? Any tension at home or at work?
+    Patient: I do get tense, yes. My heart was beating very fast and I felt
+      frightened, I thought something is happening to me. My sister says it
+      is anxiety only, she also gets it.
+    Doctor: Have you had this before?
+    Patient: No, first time. Actually I have been very tired since I came
+      back — we went to my in-laws, it was two days in the bus each way, I
+      only got back day before yesterday. Since then I am not feeling right.
+    Doctor: Any medicines you are taking?
+    Patient: Just these, doctor. (hands over a strip)
+
+  # The photographed blister strip, as sarvam-vision would return it. The
+  # patient never says "contraceptive" and is not asked. It is only here.
+  document_text: |
+    NOVELON
+    Desogestrel 0.15 mg and Ethinylestradiol 0.03 mg Tablets IP
+    21 Tablets
+    Mfd. by: Organon India Ltd.
+    To be taken as directed by the physician.
+
+  # What the clinician typed into the note. Not used by extraction — kept for
+  # the note-versus-transcript check listed under "Later, not now" in
+  # CLAUDE.md, which this case is the reason to build.
+  clinician_note: "34F c/o chest tightness + SOB since morning. ?anxiety. Reassure, review SOS."
+
+# --- what extraction should produce ----------------------------------------
+# Hand-authored ground truth for this one case. Three-valued: `present` and
+# `absent` are asserted; EVERYTHING ELSE MUST COME BACK UNKNOWN.
+#
+# The unknown list below is not decoration. Nobody asked this patient about
+# her calves, so calf_swelling_unilateral must be UNKNOWN — not absent. An
+# extractor that guesses absent for unasked findings penalises pulmonary
+# embolism specifically, on the exact case pulmonary embolism must survive.
+expected_findings:
+
+  present:
+    - chest_tightness                 # said directly
+    - breathlessness                  # "can't get a full breath"
+    - onset_sudden_seconds            # "it started suddenly, I was just sitting"
+    - symptoms_hours_old              # "since this morning"
+    - first_ever_episode              # "no, first time"
+    - palpitations                    # "heart was beating very fast"
+    - anxiety_or_panic_feeling        # "I felt frightened"
+    - fatigue_severe                  # "very tired since I came back"
+    - immobility_or_long_journey      # two days each way, by bus — said in passing
+    - on_oral_contraceptive           # ONLY from the blister strip. Never spoken.
+
+  absent:
+    - fever                           # explicitly denied
+    - cough                           # explicitly denied
+    - prior_panic_attacks             # "no, first time" — hers, not her sister's
+
+  # Findings that MUST come back unknown. Asserting these is the point of the
+  # list: each is a thing nobody in this consultation asked about.
+  must_be_unknown:
+    - calf_swelling_unilateral
+    - calf_pain_or_tenderness
+    - pain_pleuritic
+    - haemoptysis
+    - recent_surgery
+    - previous_clot
+    - known_cancer
+    - pregnancy_known_or_possible
+    - smoker
+
+# --- what the panel must then do -------------------------------------------
+expectations:
+
+  # The whole reason this file exists.
+  must_appear_on_cant_miss:
+    - "Pulmonary embolism"
+
+  # Not required to be top, not required to be excluded — required to be
+  # VISIBLE. The doctor's own working diagnosis appearing beside the dangerous
+  # one is what makes the panel readable rather than contrarian.
+  must_appear_somewhere:
+    - "Panic attack"
+
+  # The next question must be about the leg. It is the single finding that
+  # most divides this candidate list, and it is free to ask.
+  next_question_in:
+    - calf_swelling_unilateral
+    - calf_pain_or_tenderness
+
+  # Reasoning is the entire safety net here. A candidate whose justification
+  # cannot be read cannot be checked.
+  every_candidate_has_reasoning: true
+
+  # Non-negotiable, and mechanically checkable: no percentage, no score, no
+  # confidence, anywhere in the rendered output.
+  no_number_in_output: true
+
+  # Pulmonary embolism must be removable — by a clinician confirming it, never
+  # automatically. severity.yaml supplies the actions that would do it.
+  cant_miss_entries_are_excludable: true
+
+# --- how the panel should read, in words -----------------------------------
+# Not asserted by tests. Written down so a human reviewing output has
+# something to compare against, and so "correct" is not decided after the fact
+# by whatever the model happened to return that run.
+expected_shape: >-
+  Can't-Miss shows Pulmonary embolism, carrying its reasoning: sudden
+  breathlessness and chest tightness, a combined oral contraceptive on the
+  strip she handed over, and two days of bus travel each way finishing the day
+  before yesterday. The differential also shows Panic attack — supported by
+  the sudden onset, the palpitations and the fear — and the panel does not
+  argue with it. Nothing is ranked by likelihood and no number appears. The
+  next question is whether one calf is more swollen than the other. Pulmonary
+  embolism stays on the panel until a clinician confirms a CT pulmonary
+  angiogram, a D-dimer, or a documented Wells score, and it is the clinician
+  who removes it, not the software.

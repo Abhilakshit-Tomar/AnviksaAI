@@ -1,174 +1,425 @@
-"""
-Verify the engine's maths before DDXPlus finishes downloading.
+"""selftest.py — the invariants. Offline, no data files, no API calls, seconds.
 
     python selftest.py
 
-Builds a small synthetic world with the same shape as the real one and
-asserts the five properties the product actually depends on. If these pass,
-the reasoning is sound and only the data is missing.
+There is no dataset here, no calibration, no eval, and no measured accuracy.
+Nothing in this project can tell you it got a diagnosis right. What this file
+can tell you is that the rules the product is built on still hold — that the
+panel cannot re-ask an answered question, cannot silently remove a warning,
+cannot print a number, and cannot invent findings out of an empty
+consultation.
 
-    1. unknown != absent
-    2. expected harm re-ranks against the differential
-    3. exclusion gating lets the panel finish
-    4. information gain picks the discriminating question
-    5. it abstains when it has nothing to go on
+Those are the rules in CLAUDE.md under "Non-negotiable". Every one of them is
+non-negotiable because breaking it produced a real bug, a real fabrication, or
+a real piece of false precision at some point in this project's history. This
+file is what keeps them from coming back quietly.
+
+WHAT THIS FILE DELIBERATELY DOES NOT TEST: whether the candidates are any
+good. That needs a clinician scoring real consultations, and until that
+happens no amount of green output here means the panel is useful. Do not read
+a pass as a safety claim.
 """
-import numpy as np
-from engine import Engine
 
-# ---------------------------------------------------------------- fixture
-PATHS = ["Panic attack", "Pulmonary embolism", "Unstable angina",
-         "GERD", "Spontaneous pneumothorax"]
-FEATS = ["chest_tightness", "dyspnoea", "calf_swelling", "recent_immobility",
-         "oral_contraceptive", "exertional", "worse_lying_flat", "sudden_onset"]
-QS = ["Chest tightness?", "Breathless?", "Swelling or pain in one calf?",
-      "Long journey or immobility recently?", "On the contraceptive pill?",
-      "Brought on by exertion?", "Worse lying flat?", "Did it start suddenly?"]
+import json
+import re
+import sys
+from pathlib import Path
 
-# P(feature=1 | pathology)
-COND = np.array([
-    # tight  dysp  calf  immob   ocp  exert  flat  sudden
-    [0.85, 0.80, 0.02, 0.05, 0.30, 0.10, 0.05, 0.70],  # panic attack
-    [0.60, 0.90, 0.45, 0.55, 0.40, 0.35, 0.10, 0.80],  # PE
-    [0.90, 0.55, 0.02, 0.05, 0.25, 0.75, 0.10, 0.45],  # unstable angina
-    [0.35, 0.10, 0.01, 0.05, 0.25, 0.05, 0.70, 0.15],  # GERD
-    [0.70, 0.75, 0.02, 0.05, 0.25, 0.15, 0.05, 0.90],  # pneumothorax
-])
-PRIOR = np.array([0.44, 0.10, 0.07, 0.34, 0.05])
-SEV = {"Panic attack": 1, "Pulmonary embolism": 100, "Unstable angina": 100,
-       "GERD": 1, "Spontaneous pneumothorax": 30}
-EXCL = {"Pulmonary embolism": ["d_dimer", "ctpa"],
-        "Unstable angina": ["ecg", "troponin"],
-        "Spontaneous pneumothorax": ["cxr"]}
+import yaml
 
-# what the doctor hears in the room
-PRESENTING = {"chest_tightness": True, "dyspnoea": True, "sudden_onset": True}
-# ...plus what the pill strip and the transcript add
-WITH_RECORDS = {**PRESENTING, "oral_contraceptive": True,
-                "recent_immobility": True}
+import engine
+import extract
+import propose
+import vocabulary
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
+ROOT = Path(__file__).parent
+_failures = []
+_checks = 0
 
 
-def build():
-    e = Engine(cond=COND, prior=PRIOR, pathologies=PATHS, features=FEATS,
-               questions=QS, severity=SEV, excluded_by=EXCL)
-    e._fidx = {f: i for i, f in enumerate(FEATS)}
-    # tau=1.0 here on purpose. Damping exists to fix naive-Bayes
-    # overconfidence on 972 real features counted over a million rows; this
-    # fixture is 5 pathologies and 8 hand-written conditionals, so there is
-    # nothing to damp. These checks test the LOGIC, not the calibration —
-    # tune tau against real counts with tune.py.
-    e.tau = 1.0
-    return e
+def check(name, condition, detail=""):
+    global _checks
+    _checks += 1
+    if condition:
+        print(f"  ok    {name}")
+    else:
+        print(f"  FAIL  {name}{('  — ' + detail) if detail else ''}")
+        _failures.append(name)
 
 
-def main():
-    eng = build()
-    ok = lambda label: print(f"  PASS  {label}")
-    p_of = lambda post, n: float(post[eng.pathologies.index(n)])
-
-    # -- 1. unknown != absent ------------------------------------------------
-    print("\n1. unknown is not absent")
-    post = eng.posterior(PRESENTING)
-    post_absent = eng.posterior({**PRESENTING, "calf_swelling": False,
-                                 "recent_immobility": False,
-                                 "oral_contraceptive": False})
-    print(f"     PE, risk factors UNKNOWN : {p_of(post, 'Pulmonary embolism'):.1%}")
-    print(f"     PE, risk factors ABSENT  : "
-          f"{p_of(post_absent, 'Pulmonary embolism'):.1%}")
-    assert p_of(post_absent, "Pulmonary embolism") < p_of(post, "Pulmonary embolism")
-    assert p_of(post, "Pulmonary embolism") > 0.05, \
-        "PE must survive while nobody has asked"
-    ok("unknowns are omitted, not silently scored as negatives")
-
-    # -- 2. expected harm re-ranks ------------------------------------------
-    print("\n2. expected harm inverts the differential")
-    top_dx = eng.pathologies[int(np.argmax(post))]
-    risks = eng.ranked_risk(post)
-    print(f"     differential leads with : {top_dx} ({p_of(post, top_dx):.1%})")
-    print(f"     can't-miss  leads with : {risks[0]['name']} "
-          f"(p={risks[0]['p']:.1%} x {risks[0]['severity']} = {risks[0]['risk']:.1f})")
-    assert risks[0]["name"] != top_dx, "risk ranking must differ from probability"
-    assert risks[0]["p"] < p_of(post, top_dx), \
-        "the top risk should be LESS probable than the top diagnosis"
-    ok("a low-probability lethal condition outranks a likely benign one")
-
-    # -- 3. exclusion gating -------------------------------------------------
-    print("\n3. exclusion gating lets the panel finish")
-    before = [r["name"] for r in eng.ranked_risk(post) if r["level"] != "low"]
-    after = [r["name"] for r in eng.ranked_risk(post, ["d_dimer", "ecg"])
-             if r["level"] != "low"]
-    print(f"     before any workup : {before}")
-    print(f"     after d-dimer+ECG : {after}")
-    assert "Pulmonary embolism" in before and "Pulmonary embolism" not in after
-    assert len(after) < len(before), "the panel must be able to empty"
-    ok("ruled-out conditions leave — no permanent wall of dread")
-
-    # -- 4. information gain -------------------------------------------------
-    print("\n4. information gain picks the discriminator")
-    lead_risk = eng.ranked_risk(post)[0]["name"]
-    print(f"     from symptoms alone (branches shown for {lead_risk}):")
-    qs = eng.best_question(post, PRESENTING, top_k=3)
-    for q in qs:
-        print(f"       {q['ig']:.3f} bit  {q['en']:<38} "
-              f"yes -> {q['branches']['yes']:.0%} / no -> {q['branches']['no']:.0%}")
-    assert qs[0]["id"] in {"calf_swelling", "recent_immobility"}, \
-        f"expected a PE discriminator to win, got {qs[0]['id']}"
-
-    print("     after the pill strip and the travel history:")
-    post2 = eng.posterior(WITH_RECORDS)
-    qs2 = eng.best_question(post2, WITH_RECORDS, top_k=3)
-    for q in qs2:
-        print(f"       {q['ig']:.3f} bit  {q['en']:<38} "
-              f"yes -> {q['branches']['yes']:.0%} / no -> {q['branches']['no']:.0%}")
-    assert qs2[0]["id"] == "calf_swelling", \
-        f"expected calf swelling to win, got {qs2[0]['id']}"
-
-    for q in qs + qs2:
-        swing = abs(q["branches"]["yes"] - q["branches"]["no"])
-        assert 0.0 <= q["branches"]["yes"] <= 1.0, "branches must be probabilities"
-    top_swing = abs(qs2[0]["branches"]["yes"] - qs2[0]["branches"]["no"])
-    assert top_swing > 0.15, \
-        f"the winning question must move the top risk meaningfully ({top_swing:.2f})"
-    for q in qs2:
-        assert q["id"] not in WITH_RECORDS, "must never re-ask a known feature"
-    ok("the highest-value question is the one that discriminates")
-
-    # -- 5. end to end -------------------------------------------------------
-    print("\n5. full assess() payload")
-    out = eng.assess(WITH_RECORDS)
-    assert not out["abstaining"] and out["cant_miss"] and out["best_question"]
-    dx = ", ".join(f"{d['name']} {d['p']:.0%}" for d in out["differential"][:3])
-    cm = ", ".join(f"{c['name']} {c['risk']:.1f}" for c in out["cant_miss"])
-    print(f"     differential : {dx}")
-    print(f"     can't-miss   : {cm}")
-    print(f"     ask next     : {out['best_question']['en']}")
-    ok("assess() returns a contract-shaped payload")
-
-    # -- 6. abstention -------------------------------------------------------
-    print("\n6. abstention")
-    blank = eng.assess({})
-    print(f"     no evidence  : abstaining={blank['abstaining']}, "
-          f"entropy={blank['entropy']}")
-    print(f"     w/ evidence  : abstaining={out['abstaining']}, "
-          f"entropy={out['entropy']}")
-    assert blank["abstaining"], "tune abstain_entropy — should abstain on nothing"
-    assert not blank["differential"], "must not show a ranking while abstaining"
-    ok("declines to rank when it has nothing to go on")
-
-    # -- 7. severity floor ---------------------------------------------------
-    print("\n7. the severity floor")
-    certain = eng.posterior({"chest_tightness": True, "dyspnoea": True,
-                             "worse_lying_flat": False, "exertional": False,
-                             "calf_swelling": False, "recent_immobility": False})
-    names = [r["name"] for r in eng.ranked_risk(certain)]
-    print(f"     panic attack p={p_of(certain, 'Panic attack'):.1%}, "
-          f"panel = {names[:3]}")
-    assert "Panic attack" not in names and "GERD" not in names, \
-        "severity-1 conditions must never reach the panel, however probable"
-    ok("a near-certain benign condition still cannot enter Can't-Miss")
-
-    print("\nAll checks passed. The reasoning is sound — plug in real counts.\n")
+def section(title):
+    print(f"\n{title}")
 
 
-if __name__ == "__main__":
-    main()
+# A candidate set standing in for propose.py's output. Hand-written so these
+# tests never touch the network: the invariants are properties of engine.py
+# and the two YAML files, not of any model's behaviour on a given day.
+FINDINGS = {
+    "chest_tightness": True,
+    "breathlessness": True,
+    "onset_sudden_seconds": True,
+    "palpitations": True,
+    "anxiety_or_panic_feeling": True,
+    "immobility_or_long_journey": True,
+    "on_oral_contraceptive": True,
+    "fever": False,
+    "cough": False,
+}
+
+CANDIDATES = [
+    {
+        "condition": "Pulmonary embolism",
+        "reasoning": "Sudden breathlessness with chest tightness, on a combined oral contraceptive, after a long journey.",
+        "supported_by": ["breathlessness", "onset_sudden_seconds", "on_oral_contraceptive",
+                         "immobility_or_long_journey", "chest_tightness"],
+        "opposed_by": [],
+        "unresolved": ["calf_swelling_unilateral", "pain_pleuritic", "haemoptysis"],
+    },
+    {
+        "condition": "Panic attack",
+        "reasoning": "Sudden chest tightness with palpitations and a feeling of fright.",
+        "supported_by": ["anxiety_or_panic_feeling", "palpitations", "chest_tightness"],
+        "opposed_by": [],
+        "unresolved": ["pain_pleuritic", "prior_panic_attacks"],
+    },
+    {
+        "condition": "Possible NSTEMI / STEMI",
+        "reasoning": "Chest tightness of sudden onset with palpitations.",
+        "supported_by": ["chest_tightness", "palpitations"],
+        "opposed_by": [],
+        "unresolved": ["chest_pain_radiates_left_arm_or_jaw", "diaphoresis"],
+    },
+    {
+        # Absent from severity.yaml on purpose — the unrated tier must render.
+        "condition": "Postural orthostatic tachycardia syndrome",
+        "reasoning": "Palpitations and fatigue following a period of immobility.",
+        "supported_by": ["palpitations"],
+        "opposed_by": [],
+        "unresolved": ["lightheaded_on_standing"],
+    },
+]
+
+eng = engine.Engine.load()
+
+
+# ===========================================================================
+section("severity.yaml — the only human-auditable safeguard in the system")
+# ===========================================================================
+sev_raw = yaml.safe_load((ROOT / "severity.yaml").read_text(encoding="utf-8"))
+pathologies = sev_raw["pathologies"]
+excluded_by = sev_raw["excluded_by"]
+eligible = {c for c, v in pathologies.items() if v is not None and v >= engine.CANT_MISS_FLOOR}
+
+# If a condition can reach Can't-Miss it must be able to LEAVE Can't-Miss.
+# Without this the panel answers "what haven't you ruled out" with a question
+# that can never be finished, PE and ACS appear on every chest complaint
+# forever, and the clinician stops reading it within a week. The previous
+# file violated this for 19 of 37 eligible conditions, one of them at the top
+# severity band.
+missing_exit = sorted(eligible - set(excluded_by))
+check("every panel-eligible condition has an exclusion rule", not missing_exit, str(missing_exit))
+
+orphans = sorted(set(excluded_by) - set(pathologies))
+check("no exclusion rule for a condition that does not exist", not orphans, str(orphans))
+
+# `default: null`, not 3. An unlisted condition is UNRATED, not benign — the
+# rulebook not knowing something is a fact about the rulebook, and must not be
+# silently rendered as "probably fine".
+check("default severity is null, so unlisted means unrated", sev_raw.get("default") is None)
+
+
+# ===========================================================================
+section("findings.yaml — stable ids are what make 'never re-ask' possible")
+# ===========================================================================
+find_raw = yaml.safe_load((ROOT / "findings.yaml").read_text(encoding="utf-8"))
+
+seen, dupes, bad_id, incomplete = set(), [], [], []
+for system, group in find_raw["findings"].items():
+    for fid, meta in group.items():
+        if fid in seen:
+            dupes.append(fid)
+        seen.add(fid)
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", fid):
+            bad_id.append(fid)
+        if not (meta.get("label") and meta.get("ask")):
+            incomplete.append(fid)
+
+check("finding ids are unique across systems", not dupes, str(dupes))
+check("finding ids are lowercase snake_case", not bad_id, str(bad_id))
+check("every finding has a label and a question", not incomplete, str(incomplete))
+check("vocabulary loaded the same ids", len(vocabulary.FINDINGS) == len(seen))
+
+# Every exclusion token needs a human label. An unlabelled one would render as
+# a raw identifier in the single prompt in this system that takes a warning
+# off the screen.
+tokens = {t for toks in excluded_by.values() for t in toks}
+unlabelled = sorted(tokens - set(vocabulary.INVESTIGATIONS))
+check("every exclusion action has a readable label", not unlabelled, str(unlabelled))
+check("no investigation label nothing refers to",
+      not sorted(set(vocabulary.INVESTIGATIONS) - tokens))
+
+
+# ===========================================================================
+section("the panel")
+# ===========================================================================
+out = eng.assess(CANDIDATES, FINDINGS)
+
+# --- no number ever reaches the screen -------------------------------------
+# Not a percentage, not a score, not a confidence. Nobody is ever certain in
+# medicine, and three significant figures imply a precision no input to this
+# system can support. Checked over the whole serialised payload, because the
+# frontend renders from it and anything numeric in there can surface.
+blob = json.dumps(out)
+leaks = re.findall(r"\d+(?:\.\d+)?\s?%|\b\d+\.\d+\b", blob)
+check("no percentage or decimal anywhere in the payload", not leaks, str(leaks))
+check("no probability, score or confidence field",
+      not any(k in blob for k in ('"p":', '"score"', '"confidence"', '"probability"', '"entropy"')))
+
+# --- severity and support are two axes, never multiplied -------------------
+row = out["cant_miss"][0]
+check("severity and support are separate fields",
+      "severity_band" in row and "support" in row)
+check("severity band is a word, not a number", isinstance(row["severity_band"], str))
+check("no blended risk field exists",
+      not any(k in row for k in ("risk", "weighted", "priority_score")))
+
+# --- the severity floor holds ----------------------------------------------
+# A critical condition must never sort below a routine one, however well the
+# findings support the routine one. Panic attack is better supported here than
+# NSTEMI and must still not outrank it.
+cm = [r["condition"] for r in out["cant_miss"]]
+check("pulmonary embolism reaches Can't-Miss", "Pulmonary embolism" in cm, str(cm))
+check("a self-limiting condition never reaches Can't-Miss", "Panic attack" not in cm)
+check("panic attack is still shown, in the differential",
+      "Panic attack" in [r["condition"] for r in out["differential"]])
+bands = [r["severity_band"] for r in out["cant_miss"]]
+check("Can't-Miss is ordered by severity band, worst first",
+      bands == sorted(bands, key=lambda b: [x[1] for x in engine.BANDS].index(b)), str(bands))
+
+# --- a naming variant must not silently demote a critical condition --------
+# The candidate list is unbounded, so conditions arrive named however the
+# model named them. Exact string matching against severity.yaml meant a
+# spelling could push a critical condition off Can't-Miss and take its
+# exclusion rule with it — a warning removed by a string comparison, which is
+# the one thing this system must never do. Observed for real on the canonical
+# case: "Panic attack (acute anxiety episode)" scored unrated.
+for variant, expected in [
+    ("Acute pulmonary embolism", "Pulmonary embolism"),
+    ("Pulmonary embolism (PE)", "Pulmonary embolism"),
+    ("Subarachnoid hemorrhage", "Subarachnoid haemorrhage"),   # American spelling
+    ("Severe anemia", "Severe anaemia"),
+    ("Panic attack (acute anxiety episode)", "Panic attack"),
+    ("NSTEMI", "Possible NSTEMI / STEMI"),                     # one side of an alternation
+    ("TIA", "Acute stroke / TIA"),
+    ("Suspected bacterial meningitis", "Bacterial meningitis"),
+]:
+    found = eng.match(variant)
+    check(f"'{variant}' is rated as '{expected}'",
+          found is not None and found[0] == expected, str(found))
+
+# Generous, but not credulous. A condition genuinely absent from the rulebook
+# must stay unrated rather than being mapped onto whatever looks nearest.
+for stranger in ["Costochondritis", "Vitamin D deficiency",
+                 "Postural orthostatic tachycardia syndrome"]:
+    check(f"'{stranger}' is honestly unrated", eng.match(stranger) is None)
+
+# Where several entries match, the most severe wins — same safe direction.
+check("a compound name takes the more dangerous of its matches",
+      eng.match("Sepsis secondary to pneumonia")[0] == "Sepsis")
+
+# A matched condition must still be able to LEAVE the panel. Reaching
+# Can't-Miss under a matched name but finding no exclusion rule under the
+# name the model used would show something that can never be cleared.
+check("a matched condition keeps its exclusion rule",
+      len(eng.exclusion_options("Acute pulmonary embolism")) > 0)
+
+# And the substitution must be visible. The one place a generous match could
+# go wrong is the one place the clinician has to be able to see it.
+variant_out = eng.assess([dict(CANDIDATES[1], condition="Panic attack (acute anxiety episode)")],
+                         FINDINGS)
+check("the rulebook entry actually applied is shown when it differs",
+      variant_out["differential"][0]["rated_as"] == "Panic attack")
+check("an exact match adds no redundant note",
+      out["cant_miss"][0]["rated_as"] is None)
+
+# --- severity-unrated is a visible tier ------------------------------------
+# A proposed condition absent from severity.yaml still appears, marked
+# unrated. It is never silently dropped, and it must not crash the renderer.
+unrated = [r["condition"] for r in out["unrated"]]
+check("a condition missing from severity.yaml renders in its own tier",
+      "Postural orthostatic tachycardia syndrome" in unrated, str(unrated))
+check("the unrated tier says so in words", out["unrated"][0]["severity_band"] == "unrated")
+
+# --- every candidate carries its reasoning ---------------------------------
+# With no eval, the visible reasoning and the clinician ARE the entire safety
+# net. A suggestion whose justification cannot be read cannot be checked.
+every_row = out["cant_miss"] + out["differential"] + out["unrated"]
+check("every candidate on the panel carries readable reasoning",
+      all(r.get("reasoning", "").strip() for r in every_row))
+check("no reasoning text contains a percentage",
+      not any(re.search(r"\d+\s?%", r["reasoning"]) for r in every_row))
+
+
+# ===========================================================================
+section("never re-ask an answered finding")
+# ===========================================================================
+q = out["next_question"]
+check("a question is offered", q is not None)
+check("the question divides the candidate list", len(q["divides"]) >= 1)
+check("the next question is about the leg",
+      q["finding"] in ("calf_swelling_unilateral", "calf_pain_or_tenderness"), q["finding"])
+
+# Answered means answered, in EITHER direction. The previous build could not
+# match a whole-question denial against its own asked set, so the identical
+# question came back every single turn. This is the regression test for that.
+answered_present = dict(FINDINGS, calf_swelling_unilateral=True)
+answered_absent = dict(FINDINGS, calf_swelling_unilateral=False)
+q_present = eng.assess(CANDIDATES, answered_present)["next_question"]
+q_absent = eng.assess(CANDIDATES, answered_absent)["next_question"]
+check("a finding answered PRESENT is never asked again",
+      q_present is None or q_present["finding"] != "calf_swelling_unilateral")
+check("a finding answered ABSENT is never asked again",
+      q_absent is None or q_absent["finding"] != "calf_swelling_unilateral")
+
+# Asked-but-unanswered also counts. The patient was put the question; asking
+# it again because they did not answer is the same failure with extra steps.
+q_asked = eng.assess(CANDIDATES, FINDINGS, asked=["calf_swelling_unilateral"])["next_question"]
+check("a finding already asked is not asked again",
+      q_asked is None or q_asked["finding"] != "calf_swelling_unilateral")
+
+# Repeatedly answering must eventually exhaust the questions rather than loop.
+state, seen_q, loops = dict(FINDINGS), [], 0
+while loops < 25:
+    nq = eng.assess(CANDIDATES, state)["next_question"]
+    if nq is None:
+        break
+    seen_q.append(nq["finding"])
+    state[nq["finding"]] = False
+    loops += 1
+check("the question sequence terminates", loops < 25, f"still asking after {loops}")
+check("no question is ever repeated", len(seen_q) == len(set(seen_q)), str(seen_q))
+
+# Examination items are legitimate next steps but must never be spoken to the
+# patient, and the caller cannot tell that from the question text alone.
+check("clinician-only questions are flagged as such",
+      eng.assess([{"condition": "Cardiac tamponade", "reasoning": "x",
+                   "supported_by": ["breathlessness"], "opposed_by": [],
+                   "unresolved": ["heart_sounds_muffled"]}],
+                 {"breathlessness": True})["next_question"]["clinician_only"] is True)
+
+
+# ===========================================================================
+section("exclusion proposes; it never auto-removes")
+# ===========================================================================
+# This is the one failure mode in this system shaped like patient harm rather
+# than noise. Every other error adds something to a list a human is reading;
+# an exclusion error REMOVES a warning, and nobody ever sees what they were
+# not shown. So a human makes every removal.
+pe = next(r for r in out["cant_miss"] if r["condition"] == "Pulmonary embolism")
+check("a Can't-Miss entry offers the actions that would exclude it",
+      len(pe.get("exclusion_options", [])) > 0)
+check("exclusion actions are shown with readable labels",
+      all(o["label"] and o["label"] != o["action"] for o in pe["exclusion_options"]),
+      str(pe["exclusion_options"]))
+
+# Recording the action alone changes nothing. Only a clinician's confirmation
+# does, and it arrives as confirmed_exclusions on the next call.
+after = eng.assess(CANDIDATES, FINDINGS, confirmed_exclusions=["Pulmonary embolism"])
+check("a confirmed exclusion leaves Can't-Miss",
+      "Pulmonary embolism" not in [r["condition"] for r in after["cant_miss"]])
+check("but is still shown as ruled out, not deleted",
+      "Pulmonary embolism" in [r["condition"] for r in after["ruled_out"]])
+check("its reasoning survives exclusion, so the decision stays auditable",
+      after["ruled_out"][0]["reasoning"].strip() != "")
+check("an excluded condition no longer drives the next question",
+      after["next_question"] is None
+      or "Pulmonary embolism" not in after["next_question"]["divides"])
+
+
+# ===========================================================================
+section("abstain visibly; fabricate nothing")
+# ===========================================================================
+# When nothing was extracted, say so. Never show a generic suggestion styled
+# as though it came from this patient. Both of these run with no network at
+# all — the abstain paths must not cost a model call.
+empty_findings, empty_quotes = extract.extract("", "")
+check("an empty consultation extracts nothing", empty_findings == {} and empty_quotes == {})
+check("nothing present proposes nothing", propose.propose({"fever": False}) == [])
+
+nothing = eng.assess([], {})
+check("no candidates means abstaining", nothing["abstaining"] is True)
+check("abstaining says so in plain words", bool(nothing["message"]))
+check("abstaining shows no candidates anywhere",
+      not (nothing["cant_miss"] or nothing["differential"] or nothing["unrated"]))
+check("abstaining offers no question it cannot justify", nothing["next_question"] is None)
+
+# The message must not tell the reader to answer questions that are not there.
+# It did exactly that once: the abstain text said "ask the questions below"
+# while the question panel showed that same message back.
+check("the abstain message does not point at absent questions",
+      "below" not in (nothing["message"] or "").lower(), nothing["message"])
+
+# A model claiming a finding supports a condition when the patient does not
+# have that finding is asserting evidence that does not exist — the one thing
+# a clinician skim-reading the panel would not catch. propose.py filters those
+# out; engine.py must survive one arriving anyway, because a crash in triage
+# shows an empty panel and an empty panel reads as "nothing to worry about".
+malformed = [
+    {"condition": "Aortic dissection", "reasoning": "test",
+     "supported_by": ["haemoptysis", {"nested": "junk"}, None],
+     "opposed_by": None, "unresolved": ["not_a_real_finding_id"]},
+]
+try:
+    bogus = eng.assess(malformed, FINDINGS)
+    ok = len(bogus["cant_miss"]) == 1 and bogus["next_question"] is None
+except Exception as e:
+    ok, bogus = False, str(e)
+check("a malformed candidate renders instead of crashing the panel", ok, str(bogus))
+
+
+# ===========================================================================
+section("determinism — identical input, identical output")
+# ===========================================================================
+# Confirmed live once: identical input returned different findings run to run
+# until temperature and seed were pinned, which changed what was on screen for
+# reasons that had nothing to do with the patient. engine.py has no randomness
+# at all and must stay that way.
+a = json.dumps(eng.assess(CANDIDATES, FINDINGS), sort_keys=True)
+b = json.dumps(eng.assess(CANDIDATES, FINDINGS), sort_keys=True)
+check("triage is deterministic", a == b)
+
+shuffled = list(reversed(CANDIDATES))
+c = json.dumps(eng.assess(shuffled, FINDINGS), sort_keys=True)
+check("candidate order from propose.py does not change the panel", a == c)
+
+
+# ===========================================================================
+section("the canonical case is expressible")
+# ===========================================================================
+# Without this, nothing defines what correct output looks like and there is
+# nothing for a regression to be measured against.
+case = yaml.safe_load((ROOT / "canonical_case.yaml").read_text(encoding="utf-8"))
+ef = case["expected_findings"]
+refs = ef["present"] + ef["absent"] + ef["must_be_unknown"] + case["expectations"]["next_question_in"]
+unknown_refs = sorted(f for f in refs if f not in vocabulary.FINDINGS)
+check("every finding the canonical case names exists in the vocabulary",
+      not unknown_refs, str(unknown_refs))
+check("pulmonary embolism is rated at the top severity band",
+      eng.band("Pulmonary embolism")[0] == "critical")
+check("pulmonary embolism can be excluded", len(eng.exclusion_options("Pulmonary embolism")) > 0)
+check("the doctor's own working diagnosis is rated, not unrated",
+      eng.band("Panic attack")[0] != "unrated")
+
+
+# ===========================================================================
+print(f"\n{'=' * 70}")
+if _failures:
+    print(f"{len(_failures)} of {_checks} FAILED: {', '.join(_failures)}")
+    sys.exit(1)
+print(f"all {_checks} invariants hold.")
+print("This says the rules still hold. It does NOT say the panel is useful —")
+print("that needs a clinician scoring real consultations, and severity.yaml")
+print("still has not been reviewed by one.")

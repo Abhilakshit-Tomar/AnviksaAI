@@ -1,354 +1,461 @@
-"""
-AnviksaAI — the reasoning engine.
-
-Everything here is counted statistics and arithmetic. No model call, no
-network, no randomness. It runs offline in single-digit milliseconds, which
-is why it is the part you build first and the part you can still demo when
-the venue wifi dies.
+"""engine.py — triage. No model call, no network, no randomness, no arithmetic
+anyone could mistake for a measurement.
 
     from engine import Engine
-    eng = Engine.load("counts.npz", "severity.yaml")
-    out = eng.assess(evidence={"E_55": True, "E_91": False}, actions_taken=["ecg"])
+    eng = Engine.load()
+    out = eng.assess(candidates, findings, confirmed_exclusions=["Pulmonary embolism"])
 
-`out` is shaped like contract.json. Hand it straight to the frontend.
+propose.py says what conditions are worth keeping in mind. This decides how
+they are shown: which band of harm-if-missed they fall into, how well the
+findings actually support them, which are still open, and what single
+question would most divide the list. It runs offline in milliseconds.
 
-THE ONE RULE: evidence is three-valued.
-    True    observed present
-    False   observed ABSENT (asked, answered no)
-    missing UNKNOWN — never asked
-Unknowns are OMITTED from the likelihood, not scored as absent. Treat them as
-absent and you multiply P(not-e | pathology) for every symptom nobody asked
-about, which systematically penalises exactly the conditions that would have
-caused those symptoms. Your Can't-Miss list would then suppress the diagnoses
-it exists to surface, while your eval numbers still look fine.
+WHAT WAS DELETED FROM THIS FILE, AND WHY IT MUST NOT COME BACK
+
+`posterior()`, `tau`, `abstain_entropy`, `_entropy`, `ranked_risk()` and the
+information-gain block are gone, along with numpy. They implemented naive
+Bayes over 49 synthetic pathologies from a dataset that has been dropped.
+
+Naive Bayes scored each condition by multiplying findings independently, so
+nothing anywhere could represent findings that only mean something TOGETHER.
+Pericarditis demonstrated it concretely: "worse lying flat, better leaning
+forward" plus "recent viral illness" is a classic trio, but scored separately
+the viral-illness term dragged toward the dozen commoner respiratory
+illnesses in the set and pericarditis never surfaced. No rephrasing of the
+input fixed it, because the architecture had nowhere to put the joint
+meaning. That is an argument about structure, not about tuning, which is why
+the replacement is a model that reads findings together and a file that rates
+harm — not a better prior.
+
+THE THREE RULES THIS FILE ENFORCES
+
+1. NO NUMBER EVER REACHES THE SCREEN. Not a percentage, not a score, not a
+   confidence. Severity numbers exist in severity.yaml because a file needs
+   sortable values; they are converted to words here and the payload carries
+   only words. Nobody is ever certain in medicine, and three significant
+   figures imply a precision no input to this system can support.
+
+2. SEVERITY AND SUPPORT ARE TWO AXES AND ARE NEVER MULTIPLIED. `P x severity`
+   was meaningful when P was a real probability. Without one, a single
+   blended number is a fabrication that throws away the two things the
+   clinician actually wants held apart: how bad would this be to miss, and
+   how well does it actually fit this patient.
+
+3. EXCLUSION PROPOSES; IT NEVER AUTO-REMOVES. Recording a CTPA makes the
+   panel ASK whether to mark pulmonary embolism ruled out. It does not
+   silently drop it. Every other error in this system adds noise to a list a
+   human is already reading. An exclusion error REMOVES A WARNING, and nobody
+   ever sees what they were not shown. It is the only failure mode here
+   shaped like patient harm, so a human makes every removal.
 """
-from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+import re
+from pathlib import Path
 
-import numpy as np
+import yaml
 
-try:
-    import yaml
-except ImportError:
-    yaml = None
+import vocabulary
 
-EPS = 1e-12
+# severity.yaml stores orders of magnitude, not a linear 1-5 — missing an MI
+# is about a hundred times worse than missing a sore throat, not five times.
+# These are the words those magnitudes are shown as. The numbers stay in this
+# module; the payload carries the words.
+BANDS = [
+    (100, "critical", "Lethal or irreversible within hours if missed"),
+    (30, "serious", "Life- or organ-threatening over days"),
+    (10, "significant", "Significant harm; needs definite treatment"),
+    (3, "routine", "Needs treatment, not urgent"),
+    (1, "self-limiting", "Usually settles on its own"),
+]
+
+UNRATED = "unrated"
+UNRATED_NOTE = "Not in the reviewed severity file — shown, but unrated"
+
+# A condition reaches Can't-Miss at this severity or above. severity.yaml
+# guarantees every condition at or above it has an exclusion rule, so
+# everything that can reach the panel can also leave it. A panel that cannot
+# be finished becomes a smoke alarm that goes off when you make toast.
+CANT_MISS_FLOOR = 10
+
+# Words that qualify a condition without identifying it. Stripped before
+# matching so "Acute pulmonary embolism" still finds "Pulmonary embolism".
+# Kept short on purpose: every word removed here is a word that can no longer
+# tell two conditions apart, so this list stays at hedges and tempo markers
+# and never grows to include anything anatomical or pathological.
+_NOISE = {
+    "possible", "probable", "suspected", "likely", "query", "rule", "out",
+    "acute", "subacute", "chronic", "early", "late", "initial", "recurrent",
+    "and", "or", "with", "of", "the", "a", "an", "in", "to", "due", "secondary",
+}
 
 
-def _entropy(p, axis=0):
-    p = np.clip(p, EPS, 1.0)
-    return -(p * np.log2(p)).sum(axis=axis)
+def _normalise(text):
+    """Lowercase, strip anything parenthesised, fold British spellings.
+
+    The spelling fold matters more than it looks: severity.yaml is written in
+    British medical English (haemorrhage, oedema, anaemia, ischaemia) and a
+    model will freely return either. A missed match on that alone would push
+    subarachnoid haemorrhage off Can't-Miss.
+    """
+    text = re.sub(r"\([^)]*\)", " ", text.lower())
+    text = text.replace("ae", "e").replace("oe", "e")
+    return re.sub(r"[^a-z0-9/ ]+", " ", text)
 
 
-@dataclass
+def _tokens(text):
+    return {w for w in _normalise(text).replace("/", " ").split() if w and w not in _NOISE}
+
+
+def _alternatives(name):
+    """A severity.yaml name split on '/' into the alternatives it offers."""
+    return [
+        {w for w in part.split() if w and w not in _NOISE}
+        for part in _normalise(name).split("/")
+    ]
+
+
 class Engine:
-    cond: np.ndarray          # (P, F)  P(feature=1 | pathology)
-    prior: np.ndarray         # (P,)
-    pathologies: list
-    features: list
-    questions: list           # human-readable text per feature
-    severity: dict            # pathology -> harm_if_missed
-    excluded_by: dict         # pathology -> [actions that take it off the panel]
-    default_severity: int = 3
+    def __init__(self, severity, excluded_by):
+        self.severity = severity
+        self.excluded_by = excluded_by
 
-    # DDXPlus flattens 223 evidence codes into 972 binary features, because
-    # four location variables carry 165 values each. `parents` maps each
-    # feature back to its evidence code so the question engine asks "Does the
-    # pain radiate to another location?" instead of "Pain in the tonsil(L)?".
-    parents: list = field(default_factory=list)
-    parent_questions: list = field(default_factory=list)
-
-    # Likelihood temperature. THE most important knob in the engine.
-    #
-    # Naive Bayes over 1M rows produces very sharp conditionals, and
-    # multiplying ~10 of them drives the posterior to 100.0% / 0.0%. That
-    # confidence is unearned: the independence assumption is false (the
-    # flattened location values are mutually exclusive by construction, and
-    # real symptoms correlate), so the model counts the same evidence
-    # several times over.
-    #
-    # For THIS product that collapse is fatal, not cosmetic. Can't-Miss
-    # exists to surface conditions sitting at 3-8%. If every posterior is
-    # 100/0 there is nothing left to rank and the panel goes empty.
-    #
-    # tau < 1 damps each factor: logP += tau * log P(e|path). Tune it on
-    # VALIDATE against calibration, never on test. ~0.25 is a sane start.
-    tau: float = 0.15
-
-    # Nothing below this severity may ever appear on the Can't-Miss panel.
-    panel_min_severity: int = 10
-
-    _fidx: dict = field(default_factory=dict, repr=False)
-
-    # ---------------------------------------------------------------- load
     @classmethod
-    def load(cls, counts_path="counts.npz", severity_path="severity.yaml"):
-        z = np.load(counts_path, allow_pickle=True)
-        if yaml is None:
-            raise ImportError("pip install pyyaml")
-        with open(severity_path, encoding="utf-8") as f:
-            sev = yaml.safe_load(f)
-        eng = cls(
-            cond=z["cond"], prior=z["prior"],
-            pathologies=list(z["pathologies"]),
-            features=list(z["features"]),
-            questions=list(z["questions"]),
-            severity=sev.get("pathologies", {}),
-            excluded_by=sev.get("excluded_by", {}),
-            default_severity=sev.get("default", 3),
-            parents=list(z["parents"]) if "parents" in z.files else [],
-            parent_questions=(list(z["parent_questions"])
-                              if "parent_questions" in z.files else []),
+    def load(cls, severity_path=None):
+        path = Path(severity_path or Path(__file__).parent / "severity.yaml")
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        # `default: null`, deliberately. An unlisted condition is UNRATED, not
+        # benign. The previous file defaulted to 3, which meant anything the
+        # rulebook had never heard of was quietly treated as mildly important
+        # and sorted below things it might well outrank.
+        return cls(
+            severity=dict(raw.get("pathologies") or {}),
+            excluded_by=dict(raw.get("excluded_by") or {}),
         )
-        eng._fidx = {f: i for i, f in enumerate(eng.features)}
-        missing = [p for p in eng.pathologies if p not in eng.severity]
-        if missing:
-            print(f"[engine] {len(missing)} pathologies have no severity, "
-                  f"defaulting to {eng.default_severity}: {missing[:5]}")
-        return eng
 
-    def sev(self, pathology) -> int:
-        return int(self.severity.get(pathology, self.default_severity))
+    # ------------------------------------------------------------- severity
+    def match(self, condition):
+        """Find this condition's entry in severity.yaml. -> (name, rank) or None.
 
-    # ----------------------------------------------------------- posterior
-    def posterior(self, evidence: dict) -> np.ndarray:
-        """
-        evidence: {feature_name: True|False}. Anything absent from the dict is
-        UNKNOWN and contributes nothing. Log space — the products underflow
-        to zero in float64 after ~40 features otherwise.
-        """
-        logp = np.log(np.clip(self.prior, EPS, None)).copy()
-        for feat, val in evidence.items():
-            j = self._fidx.get(feat)
-            if j is None:
-                continue                      # unknown code: ignore, don't guess
-            col = np.clip(self.cond[:, j], EPS, 1 - EPS)
-            logp += self.tau * np.log(col if val else 1.0 - col)
-        logp -= logp.max()                    # stabilise before exp
-        p = np.exp(logp)
-        return p / p.sum()
+        THIS IS A SAFETY MECHANISM, NOT A CONVENIENCE. The candidate list is
+        unbounded by design — propose.py is given no list to choose from — so
+        conditions arrive named however the model chose to name them. Matching
+        on exact strings meant "Panic attack (acute anxiety episode)" scored as
+        unrated when severity.yaml plainly rates "Panic attack", which was
+        observed on the canonical case the first time this ran end to end.
 
-    # ------------------------------------------------------- expected harm
-    def ranked_risk(self, post, actions_taken=()):
-        """
-        risk = P(pathology | evidence) x harm_if_missed, EXCLUDING anything the
-        clinician has already ruled out.
+        Harmless there. Not harmless in the other direction: "Acute pulmonary
+        embolism" failing to match "Pulmonary embolism" would drop a critical
+        condition out of Can't-Miss entirely, losing its exclusion rule with
+        it, over a spelling. That is a warning removed by a string comparison,
+        which is precisely what this system is not allowed to do.
 
-        The exclusion filter is not a nicety. Without it, severity=100 means
-        PE and ACS clear any threshold on every chest complaint forever, the
-        panel never changes, and the doctor stops reading it inside a week.
-        Alert fatigue is the single most common way tools like this die in
-        the field. The panel must answer "what have you not ruled out",
-        which is a question that can be *finished*.
+        So matching is deliberately generous, and generous in the safe
+        direction. Over-matching puts something on the panel a clinician can
+        dismiss in a second. Under-matching hides it. Where several entries
+        match, the most severe wins, for the same reason.
+
+        What it does NOT do is guess. Nothing here maps an unfamiliar condition
+        onto a familiar-looking one — matching requires the rulebook entry's
+        own words to be present in the candidate's name. A genuinely unlisted
+        condition still comes back unrated and is shown as such, because the
+        rulebook not knowing something is a fact worth putting on screen.
         """
-        taken = {a.lower() for a in actions_taken}
-        rows = []
-        for i, path in enumerate(self.pathologies):
-            excl = [a.lower() for a in self.excluded_by.get(path, [])]
-            if excl and taken.intersection(excl):
+        rank = self.severity.get(condition)
+        if rank is not None:
+            return condition, rank
+
+        wanted = _tokens(condition)
+        if not wanted:
+            return None
+        best = None
+        for name, value in self.severity.items():
+            if value is None:
                 continue
-            s = self.sev(path)
-            # A severity floor, not just a risk threshold. The panel means
-            # "catastrophic if missed", so a self-limiting condition is
-            # categorically ineligible no matter how probable — otherwise a
-            # 99%-certain panic attack (1.0 x 1) clears any risk threshold and
-            # the Can't-Miss panel leads with "Panic attack", which is absurd.
-            if s < self.panel_min_severity:
-                continue
-            rows.append({
-                "key": path, "name": path,
-                "p": float(post[i]), "severity": s,
-                "risk": float(post[i] * s),
-                "level": self._level(post[i] * s),
-                "excluded_by": self.excluded_by.get(path, []),
-            })
-        rows.sort(key=lambda r: -r["risk"])
-        return rows
+            # "Possible NSTEMI / STEMI" and "Acute stroke / TIA" name
+            # alternatives, not one long title. Either side matching is a match.
+            for alt in _alternatives(name):
+                if alt and alt <= wanted:
+                    if best is None or value > best[1]:
+                        best = (name, value)
+                    break
+        return best
 
+    def _rank(self, condition):
+        """Raw severity, or None if unrated. Internal only — never returned in
+        a payload; the payload carries the band word."""
+        found = self.match(condition)
+        return found[1] if found else None
+
+    def band(self, condition):
+        """-> (band_name, plain_english_note). Words, never numbers."""
+        rank = self._rank(condition)
+        if rank is None:
+            return UNRATED, UNRATED_NOTE
+        for floor, name, note in BANDS:
+            if rank >= floor:
+                return name, note
+        return BANDS[-1][1], BANDS[-1][2]
+
+    # -------------------------------------------------------------- support
     @staticmethod
-    def _level(risk):
-        if risk >= 5.0:
-            return "critical"
-        if risk >= 0.75:
-            return "serious"
-        return "low"
+    def support(candidate):
+        """How well the findings actually fit — the OTHER axis. Words only,
+        and never combined with severity.
 
-    # --------------------------------------------------- the next question
-    def best_question(self, post, evidence, top_k=4, severity_weighted=True):
+        Counting supporting findings is a blunt instrument and is meant to
+        be. A weighted score would look more sophisticated and would be
+        inventing weights nobody has measured. The clinician reads the
+        reasoning; this only decides ordering within a band.
         """
-        IG(q) = H(D) - SUM_a P(a) H(D | a), vectorised over every unasked
-        feature at once.
+        for_it = len(candidate.get("supported_by") or [])
+        against = len(candidate.get("opposed_by") or [])
+        if against > for_it:
+            return "mostly against"
+        # Net, not "any opposition at all". An earlier version demanded zero
+        # opposing findings for "strong", which read eight supporting findings
+        # and one denial as merely moderate — a description no clinician
+        # looking at the same list would recognise.
+        net = for_it - against
+        if net >= 3:
+            return "strong"
+        if net >= 2:
+            return "moderate"
+        if net >= 1:
+            return "limited"
+        return "no findings for it"
 
-        severity_weighted=True computes the entropy over the RISK-weighted
-        distribution instead of the raw posterior. That asks "which question
-        best resolves what could hurt this patient" rather than "which best
-        resolves my uncertainty in general" — value of information, not raw
-        information gain. It is the right objective for this product and it
-        is the answer to give when a judge pushes on the maths.
+    _SUPPORT_ORDER = ["strong", "moderate", "limited", "no findings for it", "mostly against"]
 
-        `asked` is keyed by PARENT code, not raw feature id. A categorical/
-        multi-choice code (E_57 "where does it radiate", C/M type) flattens
-        into ~165 value features (E_57=V_123, E_57=V_14, ...) with no bare
-        "E_57" feature at all — confirmed directly against counts.npz, not
-        assumed. A denial of the whole question ("no, it doesn't radiate
-        anywhere") has no single value to attach to, so extract.py records
-        it as the bare parent code {"E_57": False}. Matching evidence keys
-        straight against self._fidx (as this used to) silently drops that
-        key — not in _fidx, so posterior() also ignores it, which is
-        correct-ish on its own — but it ALSO never landed in `asked`,
-        so E_57=V_123 kept coming back as the top question forever no
-        matter how many times the patient denied it. Confirmed live
-        2026-08-22: reported as "stuck on the first question," reproduced
-        by feeding the exact same denial twice and watching best_question
-        return the identical id both times. Binary codes are unaffected —
-        self.parents[j] == the feature's own name for those, so this is a
-        strict superset of the old behavior, not a change for them.
+    # ------------------------------------------------------------ exclusion
+    def exclusion_options(self, condition):
+        """What would take this condition off the panel — as {token, label}.
+
+        Returned so the panel can ASK. Nothing here removes anything; the
+        caller passes confirmed exclusions back in on the next call and they
+        persist for the rest of the consult.
         """
-        asked_parents = {k.split('=', 1)[0] for k in evidence}
-        if self.parents:
-            asked = {j for j, p in enumerate(self.parents) if p in asked_parents}
-        else:
-            asked = {self._fidx[f] for f in evidence if f in self._fidx}
-        sv = np.array([self.sev(p) for p in self.pathologies], dtype=float)
-        c = np.clip(self.cond, EPS, 1 - EPS)          # (P, F)
+        # Looked up under the MATCHED rulebook name, not the name the model
+        # returned. Otherwise "Acute pulmonary embolism" reaches Can't-Miss
+        # via match() and then offers no way off it — a condition that can be
+        # shown but never cleared, which is exactly the un-finishable panel
+        # the exclusion rules exist to prevent.
+        found = self.match(condition)
+        name = found[0] if found else condition
+        return [
+            {"action": token, "label": vocabulary.INVESTIGATIONS.get(token, token)}
+            for token in self.excluded_by.get(name, [])
+        ]
 
-        # --- the OBJECTIVE: which question to rank first -------------------
-        w = post
-        if severity_weighted:
-            w = post * sv
-            w = w / w.sum()
-        pw = np.clip(w @ c, EPS, 1 - EPS)
-        ig = _entropy(w) - (
-            pw * _entropy((w[:, None] * c) / pw[None, :], axis=0)
-            + (1 - pw) * _entropy((w[:, None] * (1 - c)) / (1 - pw)[None, :], axis=0)
-        )
-        ig[list(asked)] = -np.inf                      # never re-ask
+    # ------------------------------------------------------------- question
+    def next_question(self, candidates, findings, asked=()):
+        """The one finding worth asking about next.
 
-        # --- the DISPLAY: what the doctor is shown -------------------------
-        # Always the true posterior, never the severity-weighted one. The
-        # weighting decides which question is worth asking; it must never
-        # leak into the numbers on screen, or every branch reads ~100%
-        # because the lethal condition dominates the weights.
-        pr = np.clip(post @ c, EPS, 1 - EPS)
-        post_yes = (post[:, None] * c) / pr[None, :]
-        post_no = (post[:, None] * (1 - c)) / (1 - pr)[None, :]
-        top_i = int(np.argmax(post * sv))              # the leading can't-miss
+        NOT "the best question" — that label was on the previous build and it
+        overclaimed. Information gain is optimal only with respect to a proxy
+        objective over a distribution, and there is no distribution here.
+        Nobody can have the best question. This picks a useful one and says so.
 
-        # Dedupe by PARENT evidence code. Without this the top five candidates
-        # are five values of the same 165-way location variable and the panel
-        # reads as five near-identical questions.
-        out, seen_parents = [], set()
-        for j in np.argsort(-ig):
-            if len(out) >= top_k:
-                break
-            if not np.isfinite(ig[j]) or ig[j] <= 0:
-                continue
-            feat = self.features[j]
-            parent = self.parents[j] if self.parents else feat
-            if parent in seen_parents:
-                continue
-            seen_parents.add(parent)
+        The rule, in one sentence: ask about the finding that bears on the most
+        dangerous still-open candidate; where several do, take the one that
+        candidate itself ranked as most decisive; break what remains toward the
+        finding fewer candidates are waiting on, since a question everything
+        hinges on cannot tell those things apart.
 
-            # Render the parent's real question; carry the winning value as
-            # the answer hint. "Does the pain radiate to another location?"
-            # + hint "left arm" — not "Pain radiates to left arm? yes/no".
-            text = (self.parent_questions[j] if self.parent_questions
-                    else self.questions[j])
-            hint = None
-            if "=" in feat:
-                label = self.questions[j]
-                hint = label[label.rfind("[") + 1:-1] if label.endswith("]") \
-                    else feat.split("=", 1)[1]
+        Ordering by severity first is deliberate and is not the forbidden
+        blend. The prohibition is on multiplying severity by support into one
+        displayed figure that pretends to be a measurement. Choosing which
+        question to spend a clinician's ten seconds on is a different act, and
+        "the one that could change what's on Can't-Miss" is the only ordering
+        consistent with why this product exists.
 
-            out.append({
-                "id": feat,
-                "parent": parent,
-                "ig": round(float(ig[j]), 3),
-                "en": text,
-                "answer_hint": hint,
-                "about": self.pathologies[top_i],
-                "branches": {
-                    "yes": round(float(post_yes[top_i, j]), 4),
-                    "no": round(float(post_no[top_i, j]), 4),
-                },
-            })
-        return out
+        The rank within a candidate's `unresolved` list is the model's own
+        judgment of which answer would most change whether that condition
+        belongs — information already produced, so this uses it rather than
+        inventing a second opinion about it.
 
-    # ------------------------------------------------------------ misfits
-    def misfits(self, post, evidence, limit=3):
+        NEVER RE-ASKS. A finding already present, already absent, or already
+        put to the patient is out. This is what a stable vocabulary buys: the
+        previous build could not match a whole-question denial against its own
+        asked set, so the identical question came back every single turn.
         """
-        Findings the leading diagnosis fails to explain.
+        answered = set(findings) | set(asked)
+        if not candidates:
+            return None
 
-        Scored as a likelihood ratio: how much better some other pathology
-        explains this present finding than the leading one does. Computed,
-        not an LLM's opinion — it falls out of the same conditional table.
-        """
-        lead = int(np.argmax(post))
-        lead_name = self.pathologies[lead]
-        rows = []
-        for feat, val in evidence.items():
-            if val is not True:
-                continue
-            j = self._fidx.get(feat)
-            if j is None:
-                continue
-            p_lead = max(float(self.cond[lead, j]), EPS)
-            best_other = float(np.max(np.delete(self.cond[:, j], lead)))
-            lr = best_other / p_lead
-            if lr > 3.0:                       # explained >3x better elsewhere
-                alt = int(np.argmax(np.where(
-                    np.arange(len(self.pathologies)) == lead, -1, self.cond[:, j])))
-                rows.append({
-                    "feature": feat,
-                    "text": f"{self.questions[j]} — {lead_name} does not "
-                            f"explain this ({p_lead:.1%} of cases); "
-                            f"{self.pathologies[alt]} does ({best_other:.0%}).",
-                    "against": lead_name,
-                    "ratio": round(lr, 1),
-                })
-        rows.sort(key=lambda r: -r["ratio"])
-        return rows[:limit]
+        # fid -> (candidates waiting on it, best rank any of them gave it)
+        waiting = {}
+        for cand in candidates:
+            for position, fid in enumerate(cand.get("unresolved") or []):
+                if fid in answered or fid not in vocabulary.FINDINGS:
+                    continue
+                cands, best_rank = waiting.get(fid, ([], position))
+                cands.append(cand)
+                waiting[fid] = (cands, min(best_rank, position))
+        if not waiting:
+            return None
 
-    # ------------------------------------------------------------- assess
-    def assess(self, evidence: dict, actions_taken=(), top_dx=7,
-               abstain_entropy=0.72):
-        """
-        One call -> the whole contract payload.
+        def score(item):
+            fid, (cands, best_rank) = item
+            worst = max((self._rank(c["condition"]) or 0) for c in cands)
+            # Negated where smaller is better, so one max() reads correctly.
+            # The final term is alphabetical and exists only so the same input
+            # always produces the same question — there is no principle in it,
+            # and pretending otherwise would be the kind of false rigour this
+            # file exists to keep out.
+            return (worst, -best_rank, -len(cands), [-ord(ch) for ch in fid])
 
-        Abstention: if the posterior is still close to uniform we refuse to
-        rank and say what to ask instead. A system that declines to guess
-        reads as far more serious than one that always has an answer, and it
-        costs about twenty minutes to implement.
-        """
-        post = self.posterior(evidence)
-        h_norm = float(_entropy(post) / np.log2(len(post)))
-        risks = self.ranked_risk(post, actions_taken)
-        qs = self.best_question(post, evidence)
-
-        order = np.argsort(-post)[:top_dx]
-        differential = [{
-            "key": self.pathologies[i], "name": self.pathologies[i],
-            "p": round(float(post[i]), 4),
-        } for i in order]
-
-        abstaining = h_norm > abstain_entropy
+        fid, (cands, _) = max(waiting.items(), key=score)
         return {
-            "abstaining": abstaining,
-            "entropy": round(h_norm, 3),
-            "differential": [] if abstaining else differential,
-            "cant_miss": [] if abstaining else
-                         [r for r in risks if r["level"] != "low"][:4],
-            "best_question": qs[0] if qs else None,
-            "runners_up": qs[1:],
-            "misfits": [] if abstaining else self.misfits(post, evidence),
-            "message": ("Insufficient information to rank — ask the questions "
-                        "below.") if abstaining else None,
+            "finding": fid,
+            "label": vocabulary.label(fid),
+            "ask": vocabulary.question(fid),
+            # Examination and observation items are for the clinician. They
+            # are legitimate next steps but must never be spoken aloud to the
+            # patient, and the caller cannot tell from the text alone.
+            "clinician_only": vocabulary.is_clinician_only(fid),
+            "divides": sorted(c["condition"] for c in cands),
+        }
+
+    # -------------------------------------------------------------- assess
+    def assess(self, candidates, findings, confirmed_exclusions=(), asked=()):
+        """One call -> the whole payload. Contains no numbers, by construction.
+
+        candidates:            propose.propose() output
+        findings:              {finding_id: True|False}; anything absent is UNKNOWN
+        confirmed_exclusions:  conditions a CLINICIAN has confirmed ruled out.
+                               Persists across every update for the rest of the
+                               consult — this and answered findings are the only
+                               two things that survive; everything else here
+                               recomputes from scratch each time.
+        asked:                 findings already put to the patient but not yet
+                               answered, so they are not asked again.
+        """
+        confirmed = set(confirmed_exclusions)
+
+        # Abstain visibly. No candidates means say so — never fall back to
+        # something generic styled as though it came from this patient.
+        if not candidates:
+            return {
+                "abstaining": True,
+                "message": (
+                    "Nothing was extracted from this consultation yet."
+                    if not findings else
+                    "Too little to name conditions from. Keep recording."
+                ),
+                "cant_miss": [], "differential": [], "unrated": [],
+                "ruled_out": [], "doesnt_fit": [], "next_question": None,
+                "findings_present": [], "findings_absent": [],
+            }
+
+        cant_miss, differential, unrated, ruled_out = [], [], [], []
+
+        for cand in candidates:
+            condition = cand["condition"]
+            found = self.match(condition)
+            rank = found[1] if found else None
+            band, note = self.band(condition)
+            entry = {
+                "condition": condition,
+                "reasoning": cand["reasoning"],
+                # Which severity.yaml entry was applied, when it is not the
+                # name on the row. The clinician can then see that "Panic
+                # attack (acute anxiety episode)" was rated as "Panic attack"
+                # — the one place a generous match could go wrong is the one
+                # place it must be visible.
+                "rated_as": found[0] if (found and found[0] != condition) else None,
+                # The two axes, side by side, never merged into one figure.
+                "severity_band": band,
+                "severity_note": note,
+                "support": self.support(cand),
+                # isinstance guard, not decoration: propose.py filters these
+                # to real ids, but a malformed candidate reaching here must
+                # render oddly rather than raise. A crash in triage shows the
+                # clinician an empty panel, and an empty panel is
+                # indistinguishable from "nothing to worry about".
+                "supported_by": [
+                    {"finding": f, "label": vocabulary.label(f)}
+                    for f in cand.get("supported_by") or [] if isinstance(f, str)
+                ],
+                "opposed_by": [
+                    {"finding": f, "label": vocabulary.label(f)}
+                    for f in cand.get("opposed_by") or [] if isinstance(f, str)
+                ],
+            }
+
+            if condition in confirmed:
+                # Kept and shown, not deleted. The clinician needs to see that
+                # it was considered and cleared — that is what lets the panel
+                # be finished rather than merely emptied.
+                ruled_out.append(entry)
+            elif rank is None:
+                # Unrated is a visible tier, never a silent drop. The rulebook
+                # not knowing a condition is a fact about the rulebook.
+                unrated.append(entry)
+            elif rank >= CANT_MISS_FLOOR:
+                entry["exclusion_options"] = self.exclusion_options(condition)
+                cant_miss.append(entry)
+            else:
+                differential.append(entry)
+
+        # Order within a band by how well the findings support it. Across
+        # bands, severity leads — but the two values stay separate in the
+        # payload and are never combined into one figure.
+        def order(rows):
+            rows.sort(key=lambda r: (
+                -(self._rank(r["condition"]) or 0),
+                self._SUPPORT_ORDER.index(r["support"]),
+                r["condition"],
+            ))
+            return rows
+
+        # Findings the patient gave that NOTHING on the list explains. The
+        # "Doesn't Fit" panel: the patient told you this and no candidate
+        # accounts for it. Cheap to compute and it points at the gap rather
+        # than at the list.
+        explained = {
+            f["finding"]
+            for row in cant_miss + differential + unrated + ruled_out
+            for f in row["supported_by"]
+        }
+        # `onset` findings are excluded: they qualify other findings rather
+        # than standing alone. "Started within hours" being unexplained is not
+        # a gap in the list, it is a timing note, and letting it through fills
+        # this panel with noise that hides the one entry that matters.
+        doesnt_fit = [
+            {"finding": f, "label": vocabulary.label(f)}
+            for f, state in sorted(findings.items())
+            if state is True
+            and f not in explained
+            and vocabulary.FINDINGS.get(f, {}).get("system") != "onset"
+        ]
+
+        live = [c for c in candidates if c["condition"] not in confirmed]
+
+        return {
+            "abstaining": False,
+            "message": None,
+            "cant_miss": order(cant_miss),
+            "differential": order(differential),
+            "unrated": order(unrated),
+            "ruled_out": order(ruled_out),
+            "doesnt_fit": doesnt_fit,
+            "next_question": self.next_question(live, findings, asked),
+            "findings_present": [
+                {"finding": f, "label": vocabulary.label(f)}
+                for f, s in sorted(findings.items()) if s is True
+            ],
+            "findings_absent": [
+                {"finding": f, "label": vocabulary.label(f)}
+                for f, s in sorted(findings.items()) if s is False
+            ],
         }
 
 
 if __name__ == "__main__":
+    import json
     import sys
-    eng = Engine.load(*(sys.argv[1:3] or ["counts.npz", "severity.yaml"]))
-    print(json.dumps(eng.assess({}), indent=2)[:1200])
+
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
+    eng = Engine.load()
+    print(json.dumps(eng.assess([], {}), indent=2))
