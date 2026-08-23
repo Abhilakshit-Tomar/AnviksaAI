@@ -79,14 +79,31 @@ worse lying flat, better leaning forward, after a recent viral illness is a \
 picture; each of those findings alone is nearly meaningless. Reason about \
 combinations, not a checklist.
 
-HOW MANY: between three and ten. Fewer if the findings genuinely support \
-few. Do not pad the list to reach a number.
+CAST WIDE EARLY, AND LET THE FINDINGS NARROW IT. Early in a consultation \
+there are two or three vague complaints and almost nothing else. That is \
+NOT a reason to stay silent — it is exactly when a clinician most needs the \
+broad "do not forget about" list, because it is the moment before anything \
+has been ruled out. A headache with a rash deserves to have meningitis said \
+out loud even though almost every patient with a headache and a rash has \
+neither.
 
-IF THE FINDINGS ARE TOO THIN, SAY SO BY RETURNING AN EMPTY LIST. A handful \
-of nonspecific findings does not justify naming conditions. Returning \
-nothing is a correct answer and is much better than a plausible-looking list \
-generated from almost no information — the clinician cannot tell the \
-difference by looking, and that is what makes it dangerous.
+So: propose whatever is genuinely consistent with what you were given, and \
+say honestly how thin the support is by listing only the findings that \
+really do support it. A condition resting on one vague finding will be shown \
+as weakly supported, next to your reasoning, and the clinician can dismiss \
+it in a second. That is the intended outcome — not silence.
+
+Expect to name MORE conditions when the findings are thin and FEWER as they \
+accumulate, which is the opposite of how it might feel. More findings mean \
+more things contradicted and dropped; a short list is something you earn \
+from evidence, not something to start with.
+
+HOW MANY: three to ten. Do not pad to reach a number, and do not trim to \
+look decisive.
+
+RETURN AN EMPTY LIST ONLY IF THERE IS GENUINELY NOTHING CLINICAL HERE — no \
+symptom, no sign, no medication, nothing a doctor would act on. Not merely \
+because what you have is vague or could be a hundred things.
 
 FOR EACH CANDIDATE
 - supported_by: ids of findings this patient HAS that support it. Only ids \
@@ -110,14 +127,19 @@ _TOOL = {
         "name": "propose_candidates",
         "description": (
             "Record the conditions worth keeping in mind for this patient. "
-            "Return an empty list if the findings are too thin to support "
-            "naming anything."
+            "Empty only if the findings contain no clinical content at all — "
+            "not merely because they are vague."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "candidates": {
                     "type": "array",
+                    "description": (
+                        "Everything genuinely consistent with these findings, "
+                        "widest early and narrowing as findings accumulate. "
+                        "Empty only if there is no clinical content at all."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {
@@ -168,6 +190,16 @@ _TOOL = {
 }
 
 
+# Everything except the patient's own words that can change the answer:
+# the system prompt, the tool schema, and the vocabulary the model is given.
+# Folded into the cache key so an edit to any of them invalidates cached
+# results instead of being silently ignored.
+_PROMPT_VERSION = llm.content_hash(
+    SYSTEM_PROMPT, json.dumps(_TOOL, sort_keys=True),
+    json.dumps(sorted(vocabulary.FINDINGS), ensure_ascii=False),
+)
+
+
 def propose(findings):
     """findings: {finding_id: True|False} from extract.extract().
 
@@ -186,7 +218,7 @@ def propose(findings):
     if not present:
         return []
 
-    cache_key = llm.content_hash(llm.MODEL, json.dumps(present), json.dumps(absent))
+    cache_key = llm.content_hash(llm.MODEL, _PROMPT_VERSION, json.dumps(present), json.dumps(absent))
     cpath = llm.CACHE_DIR / f"propose_{cache_key}.json"
 
     def produce():

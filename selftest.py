@@ -215,6 +215,25 @@ for variant, expected in [
     ("NSTEMI", "Possible NSTEMI / STEMI"),                     # one side of an alternation
     ("TIA", "Acute stroke / TIA"),
     ("Suspected bacterial meningitis", "Bacterial meningitis"),
+    # The rulebook being the MORE specific of the two. Containment cannot
+    # catch these, and both were scoring unrated on a real consultation —
+    # dropping a critical condition off Can't-Miss and losing its exclusion
+    # rule. They match on a word unique to one rulebook entry.
+    ("Meningococcal meningitis", "Bacterial meningitis"),
+    ("Dengue fever", "Dengue with warning signs"),
+    ("Viral gastroenteritis", "Gastroenteritis"),
+    ("Bacterial pneumonia", "Pneumonia"),
+    # Acronym against expansion. severity.yaml writes some entries short and
+    # a model writes them long; the two share no words at all, so "Systemic
+    # lupus erythematosus flare" scored unrated against an entry named "SLE".
+    ("Systemic lupus erythematosus flare", "SLE"),
+    ("Paroxysmal supraventricular tachycardia", "PSVT"),
+    ("Upper respiratory tract infection", "URTI"),
+    ("SAH", "Subarachnoid haemorrhage"),
+    ("DKA", "Diabetic ketoacidosis"),
+    ("UTI", "Urinary tract infection"),
+    ("Giant cell arteritis", "Temporal arteritis"),
+    ("Right ovarian torsion", "Ovarian torsion"),
 ]:
     found = eng.match(variant)
     check(f"'{variant}' is rated as '{expected}'",
@@ -223,12 +242,39 @@ for variant, expected in [
 # Generous, but not credulous. A condition genuinely absent from the rulebook
 # must stay unrated rather than being mapped onto whatever looks nearest.
 for stranger in ["Costochondritis", "Vitamin D deficiency",
-                 "Postural orthostatic tachycardia syndrome"]:
+                 "Postural orthostatic tachycardia syndrome",
+                 # A word can be unique to one rulebook entry by accident and
+                 # still identify nothing. "Viral exanthem" matched "Viral
+                 # pharyngitis" on `viral` alone — rating a rash as a sore
+                 # throat — and "Stevens-Johnson syndrome / drug reaction"
+                 # matched "Acute dystonic reaction" on `reaction`.
+                 "Viral exanthem", "Stevens-Johnson syndrome / drug reaction",
+                 "Gastric neoplasm",
+                 # Anatomical and positional words identify a SITE, not a
+                 # condition. Every one of these matched something before the
+                 # generic list caught it, and the last three landed at the
+                 # top severity band: "Lower respiratory tract infection" as a
+                 # urinary infection, "Upper respiratory tract infection" as
+                 # an upper GI bleed, "Diabetic neuropathy" as ketoacidosis,
+                 # "Thyroid nodule" as thyroid storm.
+                 "Postural orthostatic tachycardia syndrome",
+                 "Lower respiratory tract infection", "Systemic sclerosis",
+                 "Sinus tachycardia", "Temporal lobe epilepsy",
+                 "Urinary retention", "Left ventricular failure",
+                 "Diabetic neuropathy", "Thyroid nodule", "Ovarian cyst",
+                 "Molar pregnancy", "Cerebral palsy"]:
     check(f"'{stranger}' is honestly unrated", eng.match(stranger) is None)
 
 # Where several entries match, the most severe wins — same safe direction.
 check("a compound name takes the more dangerous of its matches",
       eng.match("Sepsis secondary to pneumonia")[0] == "Sepsis")
+
+# Aliases name the SAME condition; they must never invent a severity for one
+# the rulebook does not have, and every alias must point at a real entry.
+_aliases = sev_raw.get("aliases") or {}
+check("every alias points at a condition that exists",
+      not sorted(set(_aliases) - set(pathologies)),
+      str(sorted(set(_aliases) - set(pathologies))))
 
 # A matched condition must still be able to LEAVE the panel. Reaching
 # Can't-Miss under a matched name but finding no exclusion rule under the

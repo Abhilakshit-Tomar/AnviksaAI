@@ -156,6 +156,32 @@ pathologies:
   "Tension headache": 1
   "Musculoskeletal chest pain": 1
 
+# Spelled-out names for the entries above that are written as acronyms.
+#
+# Not clinical judgment — naming only. A model writes "Systemic lupus
+# erythematosus flare" as often as "SLE", and the two share no words at all,
+# so the panel rated the first as UNRATED while rating the second correctly.
+# Same defect class as the spelling and qualifier mismatches engine.match()
+# already handles, and same consequence: a condition quietly losing its
+# severity band and its exclusion rule over how it happened to be written.
+#
+# Only add an entry here when it is the SAME condition under another name.
+# Anything that needs a judgment call about whether two names mean the same
+# thing belongs in the list above, with a severity of its own.
+aliases:
+  SLE: "Systemic lupus erythematosus"
+  PSVT: "Paroxysmal supraventricular tachycardia"
+  GERD: "Gastro-oesophageal reflux disease"
+  URTI: "Upper respiratory tract infection"
+  "HIV (initial infection)": "Human immunodeficiency virus"
+  "Diabetic ketoacidosis": "DKA"
+  "Acute kidney injury": "AKI"
+  "Subarachnoid haemorrhage": "SAH"
+  "Deep vein thrombosis": "DVT"
+  "Pulmonary embolism": "PE"
+  "Urinary tract infection": "UTI"
+  "Acute COPD exacerbation": "COPD exacerbation"
+
 # What action would take a condition OFF the Can't-Miss panel.
 #
 # This is the fix for alert fatigue, and the difference between a safety net

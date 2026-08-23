@@ -443,6 +443,17 @@ findings:
     pulsatile_abdominal_mass:
       label: Pulsatile abdominal mass (examined)
       ask: "(Examination) Is there a pulsatile mass in the abdomen?"
+    nausea:
+      label: Nausea
+      ask: "Do you feel sick in the stomach?"
+    # "Upset stomach" / "pet kharab" is one of the commonest opening
+    # complaints in an Indian OPD and mapped to NOTHING until a real test
+    # transcript said it and extraction came back with it missing. It is
+    # deliberately vague, because the patient's words are: it exists to be
+    # captured now and narrowed by a follow-up question, not to be guessed at.
+    stomach_upset:
+      label: Upset stomach
+      ask: "Is your stomach upset?"
     vomiting:
       label: Vomiting
       ask: "Have you been vomiting?"
@@ -569,6 +580,14 @@ findings:
     muscle_aches_severe:
       label: Severe body aches
       ask: "Do your muscles and bones ache badly?"
+    # Same gap as stomach_upset: "pain in my foot" and "my leg hurts" had
+    # nowhere to go, because every limb finding in this file was already
+    # committed to a specific site and a specific meaning (calf tenderness
+    # for clot, joint pain for arthropathy). A patient naming a limb should
+    # land somewhere.
+    limb_pain:
+      label: Arm or leg pain
+      ask: "Do you have pain in your arm or your leg?"
     chest_wall_tender:
       label: Chest wall tender
       ask: "Is the chest painful when you press on the bones or muscles?"

@@ -154,6 +154,16 @@ _TOOL = {
 }
 
 
+# Everything except the patient's own words that can change the answer:
+# the system prompt, the tool schema, and the vocabulary the model is given.
+# Folded into the cache key so an edit to any of them invalidates cached
+# results instead of being silently ignored.
+_PROMPT_VERSION = llm.content_hash(
+    SYSTEM_PROMPT, json.dumps(_TOOL, sort_keys=True),
+    json.dumps(sorted(vocabulary.FINDINGS), ensure_ascii=False),
+)
+
+
 def _flatten(transcript):
     """Accepts a plain string, or a list of utterance dicts as returned by
     capture.transcribe()'s diarized entries."""
@@ -185,7 +195,15 @@ def extract(transcript, doc_text=""):
     if not transcript.strip() and not doc_text.strip():
         return {}, {}
 
-    cpath = llm.CACHE_DIR / f"extract_{llm.content_hash(llm.MODEL, transcript, doc_text)}.json"
+    # The cache key covers EVERYTHING that determines the answer, not just the
+    # patient's words. Keying on (model, transcript, doc_text) alone meant
+    # adding findings to the vocabulary changed nothing for any transcript
+    # already seen — the old, smaller extraction was served forever. Caught
+    # live: three findings were added to fill a real gap, and re-running the
+    # exact transcript that exposed the gap returned the same two findings as
+    # before. A stale cache that silently drops findings is the same failure
+    # shape as an extractor that misses them.
+    cpath = llm.CACHE_DIR / f"extract_{llm.content_hash(llm.MODEL, _PROMPT_VERSION, transcript, doc_text)}.json"
 
     def produce():
         catalog = vocabulary.catalog_for_prompt()

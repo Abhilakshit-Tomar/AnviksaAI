@@ -89,6 +89,47 @@ _NOISE = {
 }
 
 
+# Words that describe a condition without naming one. Excluded from the
+# distinctive-word rule in match() — never from containment, where they carry
+# real meaning ("Viral pharyngitis" is not "pharyngitis").
+#
+# Each of these happened to appear in exactly one rulebook entry by accident,
+# which made it look identifying when it is not. Observed: "Viral exanthem"
+# matched "Viral pharyngitis" on the word `viral` alone, rating a rash as a
+# sore throat, and "Stevens-Johnson syndrome / drug reaction" matched "Acute
+# dystonic reaction" on `reaction`. Both are now honestly unrated.
+_GENERIC = {
+    # kind-of-illness words
+    "viral", "bacterial", "fungal", "infection", "infective", "infectious",
+    "reaction", "disease", "disorder", "syndrome", "failure", "attack",
+    "episode", "illness", "condition", "injury", "pain", "fever",
+    "neoplasm", "tumour", "tumor", "cancer", "bleed", "bleeding", "crisis",
+    "exacerbation", "obstruction", "detachment", "retention",
+    # where it is, not what it is. "Lower respiratory tract infection"
+    # matched "Urinary tract infection" on `tract`, and "Upper respiratory
+    # tract infection" matched "Upper GI bleed" on `upper` — the second at
+    # the top severity band.
+    "upper", "lower", "left", "right", "anterior", "posterior", "proximal",
+    "distal", "bilateral", "unilateral", "tract", "chest", "abdominal",
+    "cardiac", "renal", "hepatic", "gastric", "systemic", "deep", "vein",
+    "media", "angle", "closure", "gi", "pre", "post",
+    # organ adjectives. Each names a site that many conditions share, so on
+    # its own it identifies nothing: "Temporal lobe epilepsy" matched
+    # "Temporal arteritis", "Urinary retention" matched "Urinary tract
+    # infection", and left unblocked "Diabetic neuropathy" would have been
+    # rated as diabetic ketoacidosis and "Thyroid nodule" as thyroid storm —
+    # both at the top severity band. Every entry these appear in is still
+    # reachable through containment, which needs the whole name.
+    "temporal", "urinary", "ovarian", "testicular", "inguinal", "pancreatic",
+    "retinal", "atrial", "thyroid", "diabetic", "kidney", "bowel", "adrenal",
+    "ectopic", "pregnancy", "intracranial", "cerebral", "coronary",
+    # degree and manner
+    "severe", "mild", "moderate", "stable", "unstable", "spontaneous",
+    "localised", "localized", "raised", "pressure", "signs", "warning",
+    "food", "human", "virus", "tachycardia", "bradycardia",
+}
+
+
 def _normalise(text):
     """Lowercase, strip anything parenthesised, fold British spellings.
 
@@ -115,9 +156,36 @@ def _alternatives(name):
 
 
 class Engine:
-    def __init__(self, severity, excluded_by):
+    def __init__(self, severity, excluded_by, aliases=None):
         self.severity = severity
         self.excluded_by = excluded_by
+        # Another name for the SAME rulebook entry, so "Systemic lupus
+        # erythematosus flare" finds the entry written as "SLE". Matched by
+        # the same two rules as the canonical name.
+        self.aliases = dict(aliases or {})
+        # token -> the single rated condition whose name contains it, for
+        # tokens appearing in exactly one. See match(), rule 2.
+        #
+        # BUILT FROM CANONICAL NAMES ONLY — never from aliases. Expanding an
+        # acronym injects generic words into this index that the rulebook
+        # never actually used to name anything: expanding PSVT put
+        # "tachycardia" in here, and "Postural orthostatic tachycardia
+        # syndrome" promptly matched PSVT. Expanding URTI would have made
+        # "Lower respiratory tract infection" match the upper one.
+        #
+        # So the two rules draw on different vocabularies, deliberately.
+        # Aliases are exact alternative names and are matched STRICTLY, by
+        # containment. The loose rule only ever fires on words the rulebook
+        # itself chose, which are the words a clinician actually reviewed.
+        owners = {}
+        for name, value in severity.items():
+            if value is None:
+                continue
+            for token in _tokens(name):
+                if token in _GENERIC:
+                    continue
+                owners.setdefault(token, set()).add(name)
+        self._unique_token = {t: next(iter(n)) for t, n in owners.items() if len(n) == 1}
 
     @classmethod
     def load(cls, severity_path=None):
@@ -130,6 +198,7 @@ class Engine:
         return cls(
             severity=dict(raw.get("pathologies") or {}),
             excluded_by=dict(raw.get("excluded_by") or {}),
+            aliases=dict(raw.get("aliases") or {}),
         )
 
     # ------------------------------------------------------------- severity
@@ -167,17 +236,57 @@ class Engine:
         wanted = _tokens(condition)
         if not wanted:
             return None
+
         best = None
+
+        def consider(name, value):
+            nonlocal best
+            if best is None or value > best[1]:
+                best = (name, value)
+
         for name, value in self.severity.items():
             if value is None:
                 continue
-            # "Possible NSTEMI / STEMI" and "Acute stroke / TIA" name
-            # alternatives, not one long title. Either side matching is a match.
-            for alt in _alternatives(name):
-                if alt and alt <= wanted:
-                    if best is None or value > best[1]:
-                        best = (name, value)
+            # Rule 1 — containment. The rulebook entry's words all appear in
+            # the candidate's name: "Acute pulmonary embolism" contains
+            # "Pulmonary embolism". "Possible NSTEMI / STEMI" and "Acute
+            # stroke / TIA" name alternatives rather than one long title, so
+            # either side matching counts.
+            matched = False
+            for source in (name, self.aliases.get(name, "")):
+                if not source:
+                    continue
+                for alt in _alternatives(source):
+                    if alt and alt <= wanted:
+                        consider(name, value)
+                        matched = True
+                        break
+                if matched:
                     break
+
+        # Rule 2 — a distinctive shared word. Containment alone fails whenever
+        # the RULEBOOK is the more specific of the two: "Meningococcal
+        # meningitis" does not contain "Bacterial meningitis", and scored
+        # unrated — dropping a condition at the top severity band off
+        # Can't-Miss and losing its exclusion rule with it. Same for "Dengue
+        # infection" against "Dengue with warning signs". Both found by
+        # running a real consultation, not by reading the code.
+        #
+        # A word that appears in exactly ONE rulebook entry identifies that
+        # entry: "meningitis", "dengue", "embolism", "dissection". A word
+        # appearing in several — "pulmonary" spans embolism, oedema and
+        # neoplasm — identifies nothing and is deliberately powerless here.
+        #
+        # This over-matches sometimes: "heat stroke" shares "stroke" with
+        # "Acute stroke / TIA" and will be rated as one. That is the safe
+        # direction and it is visible — the row shows which rulebook entry was
+        # applied — whereas the failure it replaces was a critical condition
+        # quietly demoted to unrated.
+        for token in wanted:
+            owner = self._unique_token.get(token)
+            if owner is not None:
+                consider(owner, self.severity[owner])
+
         return best
 
     def _rank(self, condition):
@@ -340,7 +449,13 @@ class Engine:
                 "message": (
                     "Nothing was extracted from this consultation yet."
                     if not findings else
-                    "Too little to name conditions from. Keep recording."
+                    # Rare, and it should be. propose.py casts wide on thin
+                    # findings rather than staying silent — a vague complaint
+                    # is the moment a clinician most needs the broad list,
+                    # because it is before anything has been ruled out. This
+                    # message means the findings carried no clinical content
+                    # at all, not that they were merely nonspecific.
+                    "Nothing here yet that names a condition. Keep recording."
                 ),
                 "cant_miss": [], "differential": [], "unrated": [],
                 "ruled_out": [], "doesnt_fit": [], "next_question": None,
