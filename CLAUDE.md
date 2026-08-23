@@ -59,15 +59,18 @@ Sarvam captures  ->  LLM reads and proposes  ->  our rulebook triages  ->  clini
 | extract | `extract.py` | this patient's transcript/documents -> findings, three-valued |
 | propose | `propose.py` | findings -> candidate conditions + what supports/opposes each |
 | triage | `engine.py` | severity band, exclusion state, support ordering |
-| ask | `engine.py` | the finding that most divides the current candidate list |
-| speak | `capture.speak()` | `bulbul-v3` — **currently unwired**, see below |
+| ask | `engine.py` | the finding that bears on the most dangerous open candidate |
 
 There is no `api/` package; every module above sits at the repo root.
-`capture.speak()` exists and works but nothing calls it — the "ask this
-aloud" button went when the scripted walkthrough did, and `/analyze` has no
-TTS step. Either wire it back to the next question or delete it; leaving a
-documented stage that no code path reaches is how the last round of stale
-docs happened.
+
+**`capture.speak()` is gone.** It existed, worked, and nothing called it —
+the "ask this aloud" button went when the scripted walkthrough did. It was
+deleted rather than wired up, because wiring it now would ship the
+one-hardcoded-Hindi-sentence failure again: speaking the question properly
+needs `capture.translate()` in the loop, and that needs a native speaker to
+check the clinical phrasing first (see "Later, not now"). A documented stage
+no code path reaches is how the last round of stale docs happened; so is a
+half-wired one. It is in git history when the translation work is done.
 
 Two LLM calls, never one. Extraction must not see the candidate list, or the
 model starts extracting findings *because* they fit a condition it is already
@@ -189,16 +192,23 @@ coverage. Do not claim a number that cannot be measured.
 ## Layout
 
 ```
-capture.py       Sarvam STT / vision / TTS, all disk-cached by content hash
-extract.py       transcript/documents -> findings (fixed vocabulary, three-valued)
-propose.py       findings -> candidates + supporting/opposing findings + reasoning
-engine.py        severity band, exclusion state, support ordering, next question
-severity.yaml    harm-if-missed + exclusion rules   <- clinical judgment, hand-written
-findings.yaml    the finding vocabulary             <- hand-written
-selftest.py      invariants: never re-ask, exclusion, severity floor, determinism
-main.py          FastAPI: POST /capture (STT/OCR), POST /analyze (propose+triage)
-web/index.html   single file, no build step
+capture.py         Sarvam STT / vision / translation, disk-cached by content hash
+llm.py             the one place that talks to the chat model: client, retry, cache
+vocabulary.py      loads findings.yaml, once
+extract.py         transcript/documents -> findings (fixed vocabulary, three-valued)
+propose.py         findings -> candidates + supporting/opposing findings + reasoning
+engine.py          severity band, exclusion state, support ordering, next question
+severity.yaml      harm-if-missed + exclusion rules   <- clinical judgment, hand-written
+findings.yaml      the finding vocabulary             <- hand-written
+canonical_case.yaml the one case that defines correct output
+selftest.py        invariants: never re-ask, exclusion, severity floor, determinism
+main.py            FastAPI: POST /capture (STT/OCR), POST /analyze (extract+propose+triage)
+web/index.html     single file, no build step
 ```
+
+`llm.py` is deliberately ignorant of medicine — it takes a system prompt, a
+user message and a tool schema. A shared helper that started assembling
+clinical prompts would be the first step back toward one merged call.
 
 **Keep `/capture` and `/analyze` separate.** They look mergeable and are not.
 `/capture` does STT or OCR only; `/analyze` does extract + propose + triage
@@ -209,10 +219,9 @@ latency on every single action. Merging them back reintroduces that.
 
 ## The canonical case
 
-There is no committed golden case yet — `demo_case.py` and `contract.json`
-were written in DDXPlus codes and go away at step 8. Author a replacement
-alongside `findings.yaml`, because without one nothing defines what correct
-output looks like and step 6's regression check has nothing to compare to.
+`canonical_case.yaml`. It replaced `demo_case.py` and `contract.json`, which
+were written in DDXPlus codes. It is read by tests and by humans and never
+reaches the screen — it is not a demo script, and nothing renders from it.
 
 The case that has always exercised this product properly: 34F, sudden chest
 tightness and dyspnoea, a photographed strip revealing a combined oral
@@ -221,80 +230,69 @@ thinking panic attack. **Pulmonary embolism must appear on Can't-Miss**, and
 the next question should be about unilateral calf swelling. Anything that
 fails to surface PE here is broken, whatever else it gets right.
 
-## Migration status (2026-08-22)
+Verified live end to end on 2026-08-23: extraction picked up both ambient
+items — the bus journey buried mid-answer in a reply about something else,
+and the contraceptive read off the blister strip, which the patient never
+mentions and is never asked about. Neither is something anyone would have
+thought to type into a chat window, which is the argument for this product
+stated in one case. PE came back critical with strong support, panic attack
+stayed visible in the differential rather than being argued with, and the
+next question was the calf.
 
-This document describes the target design. The code still implements the old
-DDXPlus one.
+The `must_be_unknown` list in that file matters as much as the expectations.
+Nobody asked this patient about her calves, so `calf_swelling_unilateral`
+must come back UNKNOWN, not absent. An extractor that guesses absent for
+unasked findings penalises pulmonary embolism specifically, on the exact case
+pulmonary embolism has to survive.
 
-**The app does not currently run.** The rewritten `severity.yaml` names
-conditions the old DDXPlus engine has never heard of, and sets `default: null`
-so an unlisted condition reads as *unrated* rather than silently benign —
-which `engine.py`'s `int(default_severity)` cannot handle. This breakage is
-intentional and expected; it clears when step 5 lands. The superseded file is
-kept as `severity.yaml.ddxplus-legacy` (same convention as
-`extract.py.groq-batched-wip`) if the old pipeline needs to be run meanwhile.
+## Migration status (2026-08-23) — done
 
-Each step is ordered by dependency, and each has an acceptance test — the
-migration is done when all of them pass.
+The DDXPlus migration is complete. Every step below has landed and its
+acceptance test passes. `python selftest.py` runs 66 invariants offline in
+about a second, and a fresh clone runs with no external download — which had
+never been true before, because `extract.py` used to read its catalog from a
+gitignored 172 MB dataset.
 
-1. ~~Rewrite this file~~ **done**
+1. ~~Rewrite this file~~
+2. ~~Rewrite `severity.yaml`~~ — 91 conditions, 75 panel-eligible, every one
+   with an exclusion rule (0 missing, 0 orphans).
+3. ~~Author `findings.yaml`~~ — 214 findings, all binary, plus labels for all
+   83 exclusion actions. `canonical_case.yaml` authored alongside it.
+4. ~~Write `propose.py`, rewrite `extract.py`~~ — two calls, `llm.py` shared
+   between them, both cached at `temperature=0`.
+5. ~~Strip `engine.py`~~ — no probability is computed anywhere; numpy gone.
+6. ~~Rewrite `selftest.py`~~
+7. ~~Rewrite the panels~~ — verified in the browser: not one digit renders in
+   any panel.
+8. ~~Delete the DDXPlus remnants~~ — requirements down from 11 packages to 8.
 
-2. ~~Rewrite `severity.yaml`~~ **done** — 91 conditions, 75 panel-eligible,
-   every one with an exclusion rule (verified: 0 missing, 0 orphans).
-   *Blocking, not code:* **a clinician must review it.** It is drafted from
-   published can't-miss lists, not verified, and with no eval downstream it is
-   the only safeguard in the system.
+**The one thing that did not land, and never will by writing code:**
+`severity.yaml` still has not been reviewed by a clinician. It is drafted from
+published can't-miss lists, and with no eval downstream it is the only
+safeguard in the system. That review gates real use, not the code.
 
-3. **Author `findings.yaml`** — the finding vocabulary. Stable id + the
-   question to ask the patient, organised by system. Must cover what
-   discriminates the conditions in `severity.yaml`, especially the joint
-   findings DDXPlus could not express (thunderclap onset, tearing pain
-   radiating to back, worse lying flat / better leaning forward).
-   *Accepts when:* every severity-100 condition has findings that can tell it
-   apart from its nearest neighbours, and the canonical case above is
-   expressible in the vocabulary.
+### What the migration itself taught, that was not in the plan
 
-4. **Write `propose.py`, rewrite `extract.py`** — two separate LLM calls.
-   `extract` maps this patient's transcript/documents to `findings.yaml`
-   ids, three-valued. `propose` takes findings only (never the transcript)
-   and returns candidates + supporting/opposing findings + reasoning. Both
-   cached, `temperature=0`, fixed seed. Update `/analyze` in `main.py` to
-   chain them.
-   *Accepts when:* irrelevant input yields zero candidates; a real case
-   yields candidates each carrying readable justification.
+**Matching candidate names to `severity.yaml` by exact string is a safety
+hole.** Found by running the canonical case end to end for the first time:
+the model returned "Panic attack (acute anxiety episode)" and it scored
+*unrated*. Harmless there. But "Acute pulmonary embolism" failing to match
+"Pulmonary embolism" would have dropped a critical condition off Can't-Miss
+and taken its exclusion rule with it — a warning removed by a string
+comparison, which is the one thing this system must never do.
 
-5. **Strip `engine.py`** — delete `posterior()`, `tau`, `abstain_entropy`,
-   `_entropy`, the information-gain block. Keep and rework `ranked_risk()`
-   into severity-band triage, `misfits()`, `_level()`, exclusion state. Add
-   `next_question()`: the finding whose support most divides the live
-   candidate set.
-   *Accepts when:* no probability is computed anywhere, and the app runs
-   again (this is what clears the breakage noted above).
+The candidate list is unbounded by design, so names arrive however the model
+chose to write them. `engine.match()` is now token-based, folds British
+spellings (`haemorrhage`/`hemorrhage` alone would have lost subarachnoid
+haemorrhage), handles the `/` alternations, and is deliberately generous in
+the safe direction: over-matching puts something on the panel a clinician
+dismisses in a second, under-matching hides it. Where several entries match,
+the most severe wins. The applied rulebook entry is shown on the row whenever
+it differs from the name proposed, because the one place a generous match
+could go wrong is the one place it has to be visible.
 
-6. **Rewrite `selftest.py`** as an invariant suite — never re-ask an answered
-   finding; exclusion proposes and never auto-removes; severity floor holds;
-   identical input gives identical output; an unrated condition renders
-   instead of crashing; irrelevant input fabricates nothing. Plus the two
-   `severity.yaml` invariants (every eligible condition has an exclusion
-   rule; no orphan rules).
-   *Accepts when:* it runs offline in seconds with no data files.
-
-7. **Rewrite the panels in `web/index.html`** — no percentages, no printed
-   arithmetic. Severity band and support strength as separate axes. Exclusion
-   becomes a confirm prompt. Severity-unrated shown as its own tier. Rename
-   "Highest-value question" to "Worth asking next".
-   *Accepts when:* no number appears anywhere in the rendered output.
-
-8. **Delete the DDXPlus remnants** — `counts.npz`, `build_counts.py`,
-   `tune.py`, `demo_case.py`, `contract.json`, `severity.yaml.ddxplus-legacy`.
-   Update `README.md`. The ~980 MB of local `ddxplus/` and `release_*.zip`
-   can be deleted from disk too; nothing reads them any more.
-   *Accepts when:* a fresh clone runs with no external download — which has
-   never been true, since `extract.py` currently reads its catalog from the
-   gitignored `ddxplus/release_evidences.json`.
-
-Unchanged throughout: `capture.py`, the `/capture` + `/analyze` split, the
-live accumulator and its debounce, the reveal gate, the "Doesn't Fit" panel.
+Do not "tighten" this to exact matching. It will look cleaner and it will
+silently demote critical conditions.
 
 ## Later, not now
 
@@ -326,9 +324,19 @@ through to speaking the raw English in an English voice. It went unnoticed
 because the scripted walkthrough pinned the displayed question to that one id,
 so the fallback never fired in a demo.
 
-`capture.translate()` already does this and always did — it takes source and
-target language codes and was already being called in the other direction
-(hi-IN -> en-IN) for the transcript gloss. The work is small.
+`capture.speak()` was deleted rather than left sitting unwired — see
+Architecture. `capture.translate()` remains and always did the job: it takes
+source and target language codes and is already called in the other direction
+(hi-IN -> en-IN) for the transcript gloss. `findings.yaml` now supplies an
+`ask` string for every finding, written to survive translation — no idiom, no
+double negatives, no two questions joined by "and" — so the missing piece is
+only the wiring. The work is small.
+
+One thing the vocabulary added that this will need: findings whose `ask`
+begins "(Examination)" or "(Observation)" are for the clinician and must
+never be spoken to the patient. `vocabulary.is_clinician_only()` flags them
+and the panel already labels them; a TTS path that ignores that flag would
+read "Are the neck veins distended?" aloud to the patient.
 
 **But do not ship it unverified.** Sarvam's translation quality on clinical
 phrasing across ten Indian languages is unknown, and a mistranslated question

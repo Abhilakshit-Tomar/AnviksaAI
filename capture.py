@@ -7,7 +7,6 @@ Four functions, matching day-plan.md step 4 (translate() added later, for
 showing the live-recording transcript's English gloss in the frontend):
     transcribe(path)        -> dict           (saaras-v3, batch + diarized)
     read_image(path)        -> dict            (sarvam-vision / doc_ai)
-    speak(text, out_path)   -> out_path         (bulbul-v3)
     translate(text)         -> str             (sarvam-translate/mayura)
 
 Every call is cached to cache/ keyed by a hash of its input, so the same
@@ -25,7 +24,6 @@ If you extend this file, verify new calls the same way: introspect the
 real client/response objects (or write a throwaway script and read the
 actual output) before trusting a docs page.
 """
-import base64
 import hashlib
 import json
 import os
@@ -179,27 +177,6 @@ def read_image(path, language="en-IN"):
     extracted = {"blocks": blocks, "text": "\n".join(blocks)}
     cpath.write_text(json.dumps(extracted, ensure_ascii=False), encoding="utf-8")
     return extracted
-
-
-# --------------------------------------------------------------------------
-def speak(text, out_path, language_code="hi-IN", speaker="shubh"):
-    """Text -> spoken audio, via bulbul-v3. Writes a WAV file at out_path
-    and returns out_path. Cached by (text, language_code, speaker), so the
-    same line is never re-synthesised — matters for both rate limits and
-    for the fallback video sounding consistent take to take."""
-    key_hash = _hash(text, language_code, speaker)
-    cpath = CACHE_DIR / f"tts_{key_hash}.wav"
-    if not cpath.exists():
-        resp = _with_retry(
-            client().text_to_speech.convert,
-            text=text, language_code=language_code, speaker=speaker,
-            model="bulbul:v3",
-        )
-        audios = getattr(resp, "audios", None) or resp["audios"]
-        cpath.write_bytes(base64.b64decode(audios[0]))
-    out_path = Path(out_path)
-    out_path.write_bytes(cpath.read_bytes())
-    return str(out_path)
 
 
 # --------------------------------------------------------------------------

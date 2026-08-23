@@ -89,59 +89,62 @@ button.primary.playing{animation:btnpulse 1s ease-in-out infinite}
 .modal-close:hover{color:var(--ink);background:var(--surface-2)}
 .modal-body{margin:18px;padding:18px 20px;background:var(--surface-2);border:1px solid var(--hair);border-radius:8px;font-family:var(--mono);font-size:12.5px;line-height:1.85;color:var(--ink-2);white-space:pre-wrap;word-break:break-word;overflow-y:auto}
 
-/* ---------- differential ---------- */
-.row{margin-bottom:11px}
-.row:last-child{margin-bottom:0}
-.rowtop{display:flex;align-items:baseline;gap:8px;margin-bottom:5px}
-.name{font-size:13.5px;color:var(--ink-2)}
-.row.lead .name{color:var(--ink);font-weight:500}
-.pct{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
-.delta{font-family:var(--mono);font-size:10.5px;padding:1px 5px;border-radius:3px}
-.delta.up{color:#fff;background:rgba(208,59,59,.85)}
-.delta.down{color:var(--muted);background:var(--surface-2)}
-.track{height:8px;background:var(--grid);border-radius:4px;overflow:hidden}
-.fill{height:100%;background:var(--blue);border-radius:0 4px 4px 0;width:0;transition:width .7s cubic-bezier(.4,0,.2,1)}
-
-/* ---------- can't-miss ---------- */
+/* ---------- candidate rows ----------
+   ONE row shape for every panel. Severity and support are rendered as two
+   separate marks that never touch: a coloured band badge on the left, a
+   plain mono support label on the right. There is deliberately no third
+   element combining them, because `P x severity` was only ever meaningful
+   when P was a real probability and a blended figure now would discard the
+   two things a clinician wants held apart.
+   There is no progress bar and no numeric column anywhere in this file. */
 .cm{border:1px solid var(--hair);border-radius:8px;padding:12px 13px;margin-bottom:9px;background:var(--surface-2);position:relative;overflow:hidden}
 .cm:last-child{margin-bottom:0}
 .cm.critical{border-color:rgba(208,59,59,.55);background:rgba(208,59,59,.07)}
+.cm.serious{border-color:rgba(236,131,90,.42)}
+.cm.unrated{border-style:dashed;border-color:rgba(255,255,255,.20)}
+.cm.gone{opacity:.5}
+.cm.gone .cmname{text-decoration:line-through;text-decoration-color:var(--muted)}
 .cm.fire{animation:fire 1.1s ease-out}
 @keyframes fire{0%{box-shadow:0 0 0 0 rgba(208,59,59,.5)}55%{box-shadow:0 0 0 9px rgba(208,59,59,0)}100%{box-shadow:0 0 0 0 rgba(208,59,59,0)}}
-.cmtop{display:flex;align-items:center;gap:8px;margin-bottom:7px}
-.badge{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;padding:2.5px 7px;border-radius:4px;font-weight:600}
+.cmtop{display:flex;align-items:center;gap:8px;margin-bottom:7px;flex-wrap:wrap}
+.badge{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;padding:2.5px 7px;border-radius:4px;font-weight:600;white-space:nowrap}
 .badge.critical{background:var(--critical);color:#fff}
 .badge.serious{background:var(--serious);color:#1a1a19}
+.badge.significant{background:var(--warning);color:#1a1a19}
+.badge.routine,.badge.self-limiting{background:var(--surface);color:var(--ink-2);border:1px solid var(--hair)}
+.badge.unrated{background:transparent;color:var(--muted);border:1px dashed var(--baseline)}
 .badge svg{width:10px;height:10px;display:block}
 .cmname{font-size:14.5px;font-weight:600;color:var(--ink)}
-.score{margin-left:auto;text-align:right}
-.score b{font-family:var(--mono);font-size:16px;font-weight:600;display:block;line-height:1.1}
-.score.critical b{color:var(--critical)}
-.score.serious b{color:var(--serious)}
-.score s{display:block;font-family:var(--mono);font-size:9.5px;color:var(--muted);text-decoration:none;margin-top:2px}
+/* The OTHER axis. Words, never a figure, and never multiplied by the badge. */
+.support{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.03em;white-space:nowrap}
+.support.strong{color:var(--ink-2)}
+.support.against{color:var(--serious)}
+.newmark{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--blue);border:1px solid rgba(57,135,229,.45);border-radius:4px;padding:1.5px 5px}
 .why{font-size:12.5px;color:var(--ink-2);line-height:1.5}
+.ratedas{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:5px}
+.evid{margin-top:8px;display:flex;flex-wrap:wrap;gap:5px}
+.evid .f{font-size:11px;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.05);border:1px solid var(--hair);color:var(--ink-2)}
+.evid .f.no{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--baseline)}
+/* Exclusion: a row of proposals, never an action that fires on its own. */
+.ruleout{margin-top:10px;padding-top:9px;border-top:1px solid var(--grid);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ruleout .l{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-right:2px}
+.ruleout button{font-size:11.5px;padding:3px 9px;border-radius:5px}
+.confirm{margin-top:9px;padding:10px 11px;border-radius:7px;border:1px solid rgba(250,178,25,.45);background:rgba(250,178,25,.08)}
+.confirm .t{font-size:12.5px;color:var(--ink);margin-bottom:8px;line-height:1.45}
+.confirm .t b{font-weight:600}
+.confirm .warn{display:block;font-size:11px;color:var(--muted);margin-top:5px;font-style:italic}
+.confirm .btns{display:flex;gap:7px}
+.confirm button{font-size:12px;padding:4px 12px}
+.group{margin:14px 0 8px;font-family:var(--mono);font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:8px}
+.group:first-child{margin-top:0}
+.group::after{content:"";flex:1;height:1px;background:var(--grid)}
 
 /* ---------- question ---------- */
 .q{font-size:16px;line-height:1.45;color:var(--ink);margin-bottom:4px}
 .qo{font-size:14px;color:var(--ink-2);margin-bottom:12px}
-.branches{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
-.br{padding:9px 11px;border-radius:7px;border:1px solid var(--hair);background:var(--surface-2)}
-.br .l{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--muted);margin-bottom:4px}
-.br .v{font-size:13px;color:var(--ink-2)}
-.br .v b{font-family:var(--mono);font-variant-numeric:tabular-nums}
-.br.yes .v b{color:var(--critical)}
-.br.no .v b{color:var(--good)}
-.alts{margin-top:12px;padding-top:11px;border-top:1px solid var(--grid)}
-.alt{display:flex;gap:10px;font-size:12px;color:var(--muted);padding:3px 0}
-.alt .ig{font-family:var(--mono);font-size:11px;color:var(--baseline);min-width:52px}
-.ask{display:flex;align-items:center;gap:10px}
-.speak{font-family:var(--mono);font-size:11px;color:var(--muted)}
-.speak.active{color:var(--blue)}
-.wave{display:inline-flex;gap:2px;align-items:flex-end;height:12px;margin-right:6px;vertical-align:-2px}
-.wave i{width:2px;background:var(--baseline);border-radius:1px;height:3px;transition:background .2s}
-.speak.active .wave i{background:var(--blue);animation:w .6s ease-in-out infinite}
-.wave i:nth-child(2){animation-delay:.1s}.wave i:nth-child(3){animation-delay:.2s}.wave i:nth-child(4){animation-delay:.3s}
-@keyframes w{0%,100%{height:3px}50%{height:12px}}
+.qwho{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--warning);margin-bottom:7px}
+.divides{margin-top:12px;padding-top:11px;border-top:1px solid var(--grid);font-size:12px;color:var(--muted);line-height:1.6}
+.divides b{color:var(--ink-2);font-weight:500}
 
 /* ---------- misfit + note ---------- */
 .mis{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid var(--grid);font-size:12.5px;color:var(--ink-2);line-height:1.5}
@@ -247,12 +250,14 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
       <div class="card scroll" style="flex:1">
         <div class="h">
           <h2>Can't-miss</h2>
-          <span class="tag" id="cmtag">ranked by P × harm-if-missed</span>
+          <!-- Was "ranked by P x harm-if-missed". There is no P any more, and
+               there was never a defensible one — see engine.py. -->
+          <span class="tag" id="cmtag">not yet ruled out</span>
         </div>
-        <div id="cm"><div class="empty">Insufficient evidence to rank.</div></div>
+        <div id="cm"><div class="empty">Nothing captured yet.</div></div>
       </div>
       <div class="card scroll" style="flex:0 0 auto;max-height:34%">
-        <div class="h"><h2>Doesn't fit</h2></div>
+        <div class="h"><h2>Doesn't fit</h2><span class="tag" id="mistag"></span></div>
         <div id="mis"><div class="empty">—</div></div>
       </div>
     </div>
@@ -260,11 +265,14 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--surface-2);border:
     <!-- RIGHT: act -->
     <div class="col">
       <div class="card scroll" id="qcard" style="flex:0 0 auto;max-height:58%">
-        <div class="h"><h2>Highest-value question</h2><span class="tag" id="igtag"></span></div>
-        <div id="qbody"><div class="empty">Posterior too flat to discriminate.</div></div>
+        <!-- Renamed from "Highest-value question". Nobody can have the best
+             question; this is the one that bears on the most dangerous thing
+             still open. -->
+        <div class="h"><h2>Worth asking next</h2><span class="tag" id="igtag"></span></div>
+        <div id="qbody"><div class="empty">Nothing captured yet.</div></div>
       </div>
       <div class="card scroll" style="flex:1">
-        <div class="h"><h2>Differential</h2><span class="tag" id="dxtag"></span></div>
+        <div class="h"><h2>Also consider</h2><span class="tag" id="dxtag"></span></div>
         <div id="dx"><div class="empty">—</div></div>
       </div>
     </div>
@@ -290,13 +298,12 @@ const ICON_MIS='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strok
 const ICON_PLAY='<svg viewBox="0 0 16 16" fill="currentColor" style="width:9px;height:9px;display:block"><path d="M4 2.3v11.4a.6.6 0 0 0 .92.5l9-5.7a.6.6 0 0 0 0-1l-9-5.7a.6.6 0 0 0-.92.5Z"/></svg>';
 
 // ===================================================================
-// Differential, Can't-Miss, Doesn't Fit and the Highest-Value Question are
-// built from POST /analyze (extract.py -> engine.py, real Sarvam
-// extraction + real engine output over 1,025,602 DDXPlus records),
-// triggered every time real live evidence changes — a recording sent, a
-// document scanned. There is no scripted narrative anymore: the functions
-// below (toBars/toCM/toMIS/toQBODY) only reformat what the engine
-// actually returned for whatever the clinician has actually captured.
+// Can't-Miss, Also-Consider, Doesn't Fit and Worth-Asking-Next are all
+// built from POST /analyze (extract.py -> propose.py -> engine.py), and
+// recomputed every time real live evidence changes — a recording sent, a
+// document scanned. There is no scripted narrative and no pre-fed state:
+// the functions below only reformat what the pipeline actually returned
+// for what this clinician actually captured, this session.
 // ===================================================================
 
 // bulbul-v3's full TTS voice set — 11 languages, a SUBSET of saaras-v3 STT's
@@ -318,58 +325,66 @@ const LANGUAGES=[
 ];
 
 // Filled in by the pre-consultation setup form (see setupForm's submit
-// handler near the bottom) before loadContract() ever runs — the selected
-// language has to be known before the first /assess call goes out, since
-// it's part of that call's body.
+// handler near the bottom) before anything is captured — the selected
+// language has to be known before the first /capture call goes out, since
+// it selects the STT language.
 let SETUP = null; // {name, age, gender, caseId, languageCode}
 
-// -------- pure formatting: engine JSON -> DOM inputs. No clinical text is invented here. --------
-function toBars(stage){
-  return stage.differential.map(d=>[d.name, +(d.p*100).toFixed(1)]);
-}
-function whyText(c){
-  // engine.py doesn't emit a per-condition narrative sentence — only the
-  // numbers and the excluded_by test list. This restates that list; it
-  // does not add any clinical claim engine.py didn't already make.
-  if(c.excluded_by && c.excluded_by.length) return `Not yet excluded. Rules out: ${c.excluded_by.join(', ')}.`;
-  return 'Not yet excluded.';
-}
-function toCM(stage){
-  return stage.cant_miss.map(c=>({n:c.name, p:c.p, s:c.severity, lvl:c.level, w:whyText(c)}));
-}
-function toMIS(stage){
-  return stage.misfits.map(m=>
-    m.against ? m.text.split(m.against).join(`<b>${m.against}</b>`) : m.text);
+// -------- engine JSON -> DOM. No clinical text is invented here. ----------
+// NO NUMBER IS RENDERED ANYWHERE IN THIS FILE. Not a percentage, not a
+// score, not a confidence, not bits of information gain — all of which the
+// previous version printed, including the literal arithmetic `0.0412 × 100`
+// under each Can't-Miss row. There is no probability behind any of it any
+// more, and three significant figures imply a precision no input to this
+// system can support. If a number ever reappears below, something upstream
+// has started fabricating one.
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>(
+  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Conditions on screen at the last repaint, so a genuinely new one can be
+// marked instead of the whole list silently reshuffling underneath the
+// reader. "The panel must not churn" — a list that reorders on every
+// sentence is unreadable, and worse, the clinician loses track of what they
+// already considered.
+let seenConditions=new Set();
+
+function candidateRow(r, opts){
+  opts=opts||{};
+  const band=r.severity_band||'unrated';
+  const isNew=!opts.suppressNew && seenConditions.size && !seenConditions.has(r.condition);
+  const sup=r.support||'';
+  const supClass=sup==='strong'?'strong':(sup==='mostly against'?'against':'');
+
+  const chips=[]
+    .concat((r.supported_by||[]).map(f=>`<span class="f">${esc(f.label)}</span>`))
+    // Denials are shown struck through rather than dropped: "asked and
+    // denied" is information the clinician gave and should be able to see
+    // was used, and it is what separates absent from never-asked.
+    .concat((r.opposed_by||[]).map(f=>`<span class="f no">${esc(f.label)}</span>`));
+
+  let ruleout='';
+  if(opts.excludable && (r.exclusion_options||[]).length){
+    ruleout=`<div class="ruleout"><span class="l">Rule out with</span>${
+      r.exclusion_options.map(o=>
+        `<button type="button" data-exclude="${esc(r.condition)}" data-action="${esc(o.label)}">${esc(o.label)}</button>`
+      ).join('')}</div>`;
+  }
+
+  return `<div class="cm ${esc(band)}${opts.gone?' gone':''}">
+    <div class="cmtop">
+      <span class="badge ${esc(band)}">${band==='critical'?ICON_CRIT:''}${esc(band)}</span>
+      <span class="cmname">${esc(r.condition)}</span>
+      ${isNew?'<span class="newmark">new</span>':''}
+      <span class="support ${supClass}">${esc(sup)}</span>
+    </div>
+    <div class="why">${esc(r.reasoning)}</div>
+    ${r.rated_as?`<div class="ratedas">rated using the entry for "${esc(r.rated_as)}"</div>`:''}
+    ${chips.length?`<div class="evid">${chips.join('')}</div>`:''}
+    ${ruleout}
+  </div>`;
 }
 
-function branchNote(p, diffTop){
-  if(diffTop===undefined) return '';
-  if(p>=diffTop) return 'top of differential';
-  if(p<0.05) return 'drops off list';
-  return '';
-}
-function toQBODY(stage){
-  const q=stage.best_question;
-  if(!q) return null;
-  // stage.differential is empty while the engine is abstaining (flat
-  // posterior) — best_question can still exist in that state (engine.py
-  // computes it independently of the abstain gate).
-  const diffTop=stage.differential.length?stage.differential[0].p:undefined;
-  const runners=(stage.runners_up||[]).filter(r=>r.id!==q.id).slice(0,3);
-  const yn=(p)=>{const note=branchNote(p,diffTop);return (p*100).toFixed(1)+'%'+(note?` · ${note}`:'');};
-  return {
-    ig:q.ig,
-    html:`
-    <div class="q">${q.en}</div>
-    <div class="branches">
-      <div class="br yes"><div class="l">IF YES</div><div class="v">${q.about} → <b>${yn(q.branches.yes)}</b></div></div>
-      <div class="br no"><div class="l">IF NO</div><div class="v">${q.about} → <b>${yn(q.branches.no)}</b></div></div>
-    </div>
-    <div class="alts">
-      ${runners.map(r=>`<div class="alt"><span class="ig">${r.ig.toFixed(3)} bit</span><span>${r.en}</span></div>`).join('')}
-    </div>`
-  };
-}
+function groupLabel(text){ return `<div class="group">${esc(text)}</div>`; }
 
 const $=id=>document.getElementById(id);
 let currentAudio=null;
@@ -399,29 +414,6 @@ function stopQuestionAudio(){
   playAudio(null);
 }
 
-function bars(list,prev){
-  const map=prev?Object.fromEntries(prev.map(d=>[d[0],d[1]])):null;
-  return list.map((d,i)=>{
-    const [n,p]=d; let del='';
-    if(map){const diff=p-(map[n]||0);
-      if(Math.abs(diff)>=3) del=`<span class="delta ${diff>0?'up':'down'}">${diff>0?'+':''}${Math.round(diff)}</span>`;}
-    return `<div class="row ${i===0?'lead':''}">
-      <div class="rowtop"><span class="name">${n}</span>${del}<span class="pct">${p}%</span></div>
-      <div class="track"><div class="fill" data-w="${p}"></div></div></div>`;
-  }).join('');
-}
-function paintBars(el,html){
-  el.innerHTML=html;
-  requestAnimationFrame(()=>el.querySelectorAll('.fill').forEach(f=>f.style.width=Math.min(100,f.dataset.w*1.55)+'%'));
-}
-function cmHtml(list,fire){
-  return list.map(c=>`<div class="cm ${c.lvl} ${fire?'fire':''}">
-    <div class="cmtop">
-      <span class="badge ${c.lvl}">${c.lvl==='critical'?ICON_CRIT:''}${c.lvl}</span>
-      <span class="cmname">${c.n}</span>
-      <span class="score ${c.lvl}"><b>${(c.p*c.s).toFixed(1)}</b><s>${c.p.toFixed(4)} × ${c.s}</s></span>
-    </div><div class="why">${c.w}</div></div>`).join('');
-}
 function utt(u){
   const d=document.createElement('div');
   d.className='utt'+(u.sys?' sys':'');
@@ -446,84 +438,170 @@ function svc(id,on){$(id).classList.toggle('on',on)}
 // ===================================================================
 let dxState=null, cmState=null;
 let committed=false, hasLiveInput=false;
+// Findings already put to the patient. Sent with every /analyze call so the
+// panel cannot ask the same thing twice — see runAnalyze().
+let askedFindings=[];
 
 const GATE_MSG=`<div class="empty locked">Waiting for a live recording or document upload, plus a committed note, before showing any diagnosis.</div>`;
 
-// CLAUDE.md: "Abstain visibly when the posterior is flat rather than
-// guessing." An abstaining stage has differential=[]/cant_miss=[] —
-// bars()/cmHtml() on an empty list is '', so without this check the panel
-// would silently go blank, which reads as broken, not as an intentional
-// abstain.
+// ABSTAIN VISIBLY. An abstaining payload has every list empty, and
+// rendering an empty list is '' — so without an explicit check the panel
+// silently goes blank, which reads as broken rather than as a deliberate
+// refusal to guess. Each paint function below says so in words instead.
 function paintDX(){
   if(!committed || !hasLiveInput){ $('dx').innerHTML=GATE_MSG; $('dxtag').textContent=''; return; }
   // Gate open but no /analyze has ever completed yet (still in flight, or
-  // one just got aborted/failed before any prior success) -- clear the
-  // tag rather than leaving whatever runAnalyze() set it to (e.g.
-  // "recalculating…") stuck with nothing behind it. Confirmed live
-  // 2026-08-22: a hung first call left this tag frozen with dxState still
-  // null even after the hang's own recovery path ran.
+  // one aborted before any prior success) — clear the tag rather than
+  // leaving "recalculating…" stuck with nothing behind it. Confirmed live:
+  // a hung first call left this frozen with dxState still null.
   if(!dxState){ $('dxtag').textContent=''; return; }
-  if(dxState.stage.abstaining){
-    $('dx').innerHTML=`<div class="empty">${dxState.stage.message || 'Insufficient information to rank.'}</div>`;
+  const s=dxState.stage;
+  if(s.abstaining){
+    $('dx').innerHTML=`<div class="empty">${esc(s.message||'Nothing to show yet.')}</div>`;
     $('dxtag').textContent='';
     return;
   }
-  const prevUsable=dxState.prevStage && !dxState.prevStage.abstaining ? toBars(dxState.prevStage) : undefined;
-  paintBars($('dx'), bars(toBars(dxState.stage), prevUsable));
-  $('dxtag').textContent='naive bayes · DDXPlus';
+  let html='';
+  if((s.differential||[]).length){
+    html+=s.differential.map(r=>candidateRow(r)).join('');
+  }
+  // SEVERITY-UNRATED IS A VISIBLE TIER. A condition proposed for this
+  // patient but absent from severity.yaml still appears, labelled — it is
+  // never silently dropped. The rulebook not knowing something is a fact
+  // about the rulebook, and hiding it would quietly narrow the unbounded
+  // candidate list back down to the closed one this build just escaped.
+  if((s.unrated||[]).length){
+    html+=groupLabel('Not in the reviewed severity file')
+        + s.unrated.map(r=>candidateRow(r)).join('');
+  }
+  $('dx').innerHTML=html||'<div class="empty">—</div>';
+  $('dxtag').textContent='';
 }
 function paintCM(){
   if(!committed || !hasLiveInput){ $('cm').innerHTML=GATE_MSG; $('cmtag').textContent=''; return; }
   if(!cmState){ $('cmtag').textContent=''; return; }
-  if(cmState.stage.abstaining){
-    $('cm').innerHTML=`<div class="empty">${cmState.stage.message || 'Insufficient information to rank.'}</div>`;
-    $('cmtag').textContent=cmState.tag || 'ranked by P × harm-if-missed';
+  const s=cmState.stage;
+  if(s.abstaining){
+    $('cm').innerHTML=`<div class="empty">${esc(s.message||'Nothing to show yet.')}</div>`;
+    $('cmtag').textContent='';
     return;
   }
-  $('cm').innerHTML=cmHtml(toCM(cmState.stage),true);
-  $('cmtag').textContent=cmState.tag || 'ranked by P × harm-if-missed';
+  let html=(s.cant_miss||[]).map(r=>candidateRow(r,{excludable:true})).join('');
+  if(!html) html='<div class="empty">Nothing on this list is still open.</div>';
+  // Confirmed exclusions stay visible, struck through, rather than
+  // vanishing. The clinician needs to see that something was considered
+  // AND cleared — that is what lets the panel be finished rather than
+  // merely emptied, and it keeps the decision auditable afterwards.
+  if((s.ruled_out||[]).length){
+    html+=groupLabel('Ruled out this consultation')
+        + s.ruled_out.map(r=>candidateRow(r,{gone:true,suppressNew:true})).join('');
+  }
+  $('cm').innerHTML=html;
+  $('cmtag').textContent=cmState.tag||'not yet ruled out';
+  wireExclusionButtons();
 }
-// Highest-Value Question and Doesn't Fit used to paint from ANY /analyze
-// response regardless of the reveal gate — engine.py computes
-// best_question independent of the abstain flag (there's real value in
-// "what to ask first" before any evidence exists), but the frontend gave
-// no visual cue that a zero-evidence question is a generic default, not
-// something derived from what was just uploaded. Confirmed confusing in
-// practice: an irrelevant image (a game screenshot) still produced a
-// specific-looking question like "Does the pain radiate to another
-// location?" tied to a named pathology, with nothing behind it. Locked
-// the same way as paintDX/paintCM until committed+hasLiveInput.
+
+// ===================================================================
+// EXCLUSION PROPOSES; IT NEVER AUTO-REMOVES.
 //
-// Below that gate, this does NOT simply mirror the abstain message the
-// way paintDX/paintCM do — confirmed a real, self-referential bug live
-// 2026-08-22: the abstain message itself reads "ask the questions
-// below," but if this panel ALSO just showed that same sentence there
-// was no question anywhere to ask. engine.assess()'s message is written
-// assuming this panel always shows a real question — that's still true
-// and still safe as long as SOME real evidence exists (best_question is
-// then informed by that evidence, just not enough of it yet to rank a
-// full differential). Only when evidence is truly empty ({}) — the
-// original irrelevant-input case — does showing a question mean showing
-// the pure-prior default with nothing behind it, so that's the only
-// case that still shows the abstain message instead.
+// Clicking an action does not remove anything. It opens a confirmation the
+// clinician has to answer, and only that answer takes the condition off the
+// panel. Every other error in this system adds noise to a list a human is
+// already reading. An exclusion error REMOVES A WARNING, and nobody ever
+// sees what they were not shown — the one failure mode here shaped like
+// patient harm rather than noise. So a human makes every removal, and the
+// confirmation says plainly what is about to happen.
+// ===================================================================
+let confirmedExclusions=[];
+
+function wireExclusionButtons(){
+  $('cm').querySelectorAll('button[data-exclude]').forEach(btn=>{
+    btn.onclick=()=>{
+      const condition=btn.dataset.exclude, action=btn.dataset.action;
+      const card=btn.closest('.cm');
+      if(card.querySelector('.confirm')) return;      // already asking
+      const box=document.createElement('div');
+      box.className='confirm';
+      box.innerHTML=`<div class="t">Mark <b>${esc(condition)}</b> as ruled out on the basis of ${esc(action)}?
+        <span class="warn">It will stop appearing on Can't-Miss for the rest of this consultation.</span></div>
+        <div class="btns"><button type="button" class="primary yes">Yes, rule it out</button>
+        <button type="button" class="no">Cancel</button></div>`;
+      card.appendChild(box);
+      box.querySelector('.no').onclick=()=>box.remove();
+      box.querySelector('.yes').onclick=()=>{
+        if(!confirmedExclusions.includes(condition)) confirmedExclusions.push(condition);
+        box.remove();
+        // Recompute rather than hiding the row locally: the exclusion also
+        // changes which question is worth asking next, and a panel that
+        // only looked updated would be worse than one that did not.
+        runAnalyze();
+      };
+    };
+  });
+}
+// Worth-Asking-Next and Doesn't Fit are locked behind the same reveal gate
+// as the other two panels, and this is why. They used to paint from ANY
+// /analyze response regardless of the gate, because the old engine computed
+// a question from the prior alone and there was real value in "what to ask
+// first" before any evidence existed. It read as specific when it was not:
+// an irrelevant image — a game screenshot — still produced a confident
+// question tied to a named pathology, with nothing whatsoever behind it.
+//
+// Fixing that too bluntly then produced a second bug: this panel mirrored
+// the abstain message, and that message read "ask the questions below,"
+// pointing at itself. Both are gone now for the same underlying reason —
+// there is no prior any more, so a question exists only when a real
+// candidate is genuinely waiting on a real finding.
 function paintQB(){
   if(!committed || !hasLiveInput){ $('qbody').innerHTML=GATE_MSG; $('igtag').textContent=''; return; }
   if(!dxState){ $('igtag').textContent=''; return; }
-  const hasEvidence=dxState.stage._evidence && Object.keys(dxState.stage._evidence).length>0;
-  if(dxState.stage.abstaining && !hasEvidence){
-    $('qbody').innerHTML=`<div class="empty">${dxState.stage.message || 'Insufficient information to rank.'}</div>`;
-    $('igtag').textContent='';
+  const s=dxState.stage, q=s.next_question;
+  $('igtag').textContent='';
+  // Abstaining means there is nothing behind a question either. The old
+  // build showed one anyway — an irrelevant image still produced a
+  // specific-looking question tied to a named pathology with nothing behind
+  // it, because the question was computed from the prior alone. There is no
+  // prior any more; if the engine has no question, that is the honest state
+  // and it is what gets shown.
+  if(s.abstaining || !q){
+    $('qbody').innerHTML=`<div class="empty">${esc(
+      s.abstaining ? (s.message||'Nothing to show yet.')
+                   : 'Nothing left to ask that would change the list.')}</div>`;
     return;
   }
-  const qb=toQBODY(dxState.stage);
-  if(qb){ $('qbody').innerHTML=qb.html; $('igtag').textContent='IG '+qb.ig.toFixed(3)+' bit'; }
-  else { $('qbody').innerHTML='<div class="empty">No remaining question changes management.</div>'; $('igtag').textContent=''; }
+  // No "IF YES → 41.2%" branches. There is no posterior to move, and
+  // printing what a yes would do to a number nobody can compute was the
+  // most confidently wrong thing on the old screen. What is shown instead
+  // is true and checkable: which conditions are waiting on this answer.
+  $('qbody').innerHTML=`
+    ${q.clinician_only?'<div class="qwho">For you to check — do not ask the patient</div>':''}
+    <div class="q">${esc(q.ask||q.label)}</div>
+    <div class="divides">Bears on <b>${(q.divides||[]).map(esc).join('</b>, <b>')}</b>.</div>
+    <div class="ruleout"><button type="button" id="q-skip">Asked — move on</button></div>`;
+  // Normally an answer arrives on its own: the clinician asks, the patient
+  // replies, the next recording is transcribed and extraction picks the
+  // finding up as present or absent, at which point it can never be asked
+  // again. This button covers the case where it was asked and no usable
+  // answer came back — without it that question would be offered every turn
+  // for the rest of the consult, which is the exact loop this build fixed.
+  $('q-skip').onclick=()=>{
+    if(!askedFindings.includes(q.finding)) askedFindings.push(q.finding);
+    $('qbody').innerHTML='<div class="empty">Working out what to ask next…</div>';
+    runAnalyze();
+  };
 }
 function paintMIS(){
-  if(!committed || !hasLiveInput){ $('mis').innerHTML=GATE_MSG; return; }
+  if(!committed || !hasLiveInput){ $('mis').innerHTML=GATE_MSG; $('mistag').textContent=''; return; }
   if(!dxState) return;
-  $('mis').innerHTML = dxState.stage.abstaining ? '<div class="empty">—</div>'
-    : toMIS(dxState.stage).map(m=>`<div class="mis">${ICON_MIS}<span>${m}</span></div>`).join('') || '<div class="empty">—</div>';
+  const list=dxState.stage.abstaining ? [] : (dxState.stage.doesnt_fit||[]);
+  $('mistag').textContent='';
+  // Findings the patient gave that NOTHING on the list explains. Points at
+  // the gap rather than at the list — if the panel cannot account for
+  // something the patient actually said, that is worth a second look at the
+  // panel, not at the patient.
+  $('mis').innerHTML = list.length
+    ? list.map(f=>`<div class="mis">${ICON_MIS}<span>${esc(f.label)} — nothing on the list accounts for this.</span></div>`).join('')
+    : '<div class="empty">—</div>';
 }
 
 // ===================================================================
@@ -570,13 +648,31 @@ async function runAnalyze(){
   try{
     const res=await fetch('/analyze', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({transcript: liveTranscriptExtra, doc_text: liveDocTextExtra, actions_taken: []}),
+      // The two things that survive across updates, sent back every time.
+      // Everything else — candidates, ordering, the next question —
+      // recomputes from scratch. `asked` is only possible because findings
+      // have stable ids; this is precisely what failed before, when a
+      // whole-question denial could not be matched and the same question
+      // returned forever.
+      body: JSON.stringify({
+        transcript: liveTranscriptExtra,
+        doc_text: liveDocTextExtra,
+        confirmed_exclusions: confirmedExclusions,
+        asked: askedFindings,
+      }),
       signal: abort.signal,
     });
     const data=await res.json().catch(()=>null);
     if(res.ok && data){
-      dxState={stage:data, prevStage:dxState?dxState.stage:undefined};
-      cmState={stage:data, tag:'live update · naive bayes'};
+      // Remember what was on screen BEFORE this repaint, so newly-arrived
+      // conditions can be marked rather than the list quietly reshuffling.
+      if(dxState && !dxState.stage.abstaining){
+        seenConditions=new Set(
+          ['cant_miss','differential','unrated','ruled_out']
+            .flatMap(k=>(dxState.stage[k]||[]).map(r=>r.condition)));
+      }
+      dxState={stage:data};
+      cmState={stage:data, tag:'not yet ruled out'};
     }
     // Either branch repaints from whatever dxState/cmState currently hold.
     // On success that's the fresh data just assigned above; on a non-2xx
@@ -630,6 +726,9 @@ function reset(){
   dxState=null;cmState=null;
   committed=false;hasLiveInput=false;
   liveTranscriptExtra='';liveDocTextExtra='';
+  // A new patient inherits nothing: no exclusions someone confirmed about
+  // someone else, no questions marked as already asked.
+  confirmedExclusions=[];askedFindings=[];seenConditions=new Set();
   if(analyzeTimer){clearTimeout(analyzeTimer);analyzeTimer=null;}
   analyzeQueued=false;
   $('dnote-input').value='';
@@ -753,14 +852,12 @@ async function liveSend(){
     const res=await fetch('/capture', {method:'POST', body: fd});
     const data=await res.json().catch(()=>({}));
     if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
-    // Same visual format as the scripted UTT/Q_ASK/Q_ANS lines above (utt()
-    // -> .who/.orig/.en, appended into #tx) rather than a bespoke box, per
-    // the ask to make the live transcript look like it belongs in the same
-    // Consultation panel. There's no diarization on this single uploaded
-    // clip (capture.transcribe() is called on ONE file here, not per-
-    // speaker-turn like the scripted mock_hi-IN/*.wav files are), so this
-    // is deliberately ONE flat entry — "Live recording" as the who label —
-    // not faked-up alternating Doctor/Patient turns.
+    // Rendered through utt() so a live recording looks like it belongs in
+    // the Consultation panel rather than sitting in a box of its own.
+    // Deliberately ONE flat entry labelled "Live recording", not faked-up
+    // alternating Doctor/Patient turns: capture.transcribe() is called on
+    // one clip here, and inventing speaker attribution the diarizer did not
+    // give would be putting words in the patient's mouth.
     utt({
       w: 'Live recording',
       o: data.transcript ? escHtml(data.transcript) : '(empty transcript)',
@@ -786,18 +883,18 @@ $('live-rec').onclick=liveToggleRecord;
 $('live-send').onclick=liveSend;
 
 // ===================================================================
-// Patient-supplied records — an ADDITIONAL input path into the SAME
-// "Patient-supplied records" panel the scripted flow's step 3 already
-// fills with the hardcoded blister-strip chips. Real uploads run through
-// capture.read_image() per file (main.py's POST /capture, "documents"
-// field — OCR only; runAnalyze() below does the extract+engine pass once
-// over the accumulated text), get combined into one doc_text, and come back as
-// "scanned_documents" (filename + extracted-char-count) — rendered here
-// with the exact .doc/.thumb/.docmeta/.chip markup step===3 uses, so a
-// real scan looks like it belongs in the same panel as the demo's. There
-// is no per-file evidence-code chip here (unlike the scripted RX/E_100
-// chips): extract.py only ever sees the COMBINED doc_text, so there's no
-// real per-document evidence to attribute a chip to without inventing one.
+// Patient-supplied records. Uploads run through capture.read_image() per
+// file (POST /capture, "documents" field — OCR only; runAnalyze() does the
+// extract+propose+triage pass once over the accumulated text), and come
+// back as "scanned_documents" (filename + extracted-char-count).
+//
+// This is the input path that carries half the argument for the product:
+// the blister strip in the canonical case is the only place the combined
+// oral contraceptive appears, and nobody would have thought to type it.
+//
+// No per-file finding chips. extract.py only ever sees the COMBINED
+// doc_text, so attributing a finding to one particular document would mean
+// inventing an attribution nothing actually established.
 // ===================================================================
 let docFiles=[];
 $('doc-files').onchange=()=>{
@@ -805,9 +902,8 @@ $('doc-files').onchange=()=>{
   $('doc-send').disabled=docFiles.length===0;
 };
 
-// Full extracted text lives only in the modal now — the panel row itself
-// stays thumbnail + filename + char count, same shape as the scripted
-// step-3 blister-strip entry.
+// Full extracted text lives in the modal; the row stays thumbnail +
+// filename + char count so a stack of records is still skimmable.
 function openDocModal(name, text){
   $('doc-modal-title').textContent = name;
   // textContent, not innerHTML — this is network-sourced OCR text.
