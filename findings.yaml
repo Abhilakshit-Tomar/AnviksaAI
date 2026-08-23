@@ -220,10 +220,14 @@ findings:
       ask: "Are both of your legs swollen?"
     calf_swelling_unilateral:
       label: One calf swollen
-      ask: "Is one of your calves more swollen than the other?"
+      # NOT "calves". Sarvam translated that into Bengali as a baby cow's
+      # milk duct — the animal sense of the word — and the question was
+      # spoken to the patient that way. Caught the first time the ask-aloud
+      # button was tested. "Lower leg" has no such second meaning.
+      ask: "Is one of your lower legs more swollen than the other?"
     calf_pain_or_tenderness:
       label: Calf pain or tenderness
-      ask: "Is your calf painful, or tender to touch?"
+      ask: "Is the back of your lower leg painful, or tender to touch?"
     raised_jvp_documented:
       label: Raised JVP (examined)
       ask: "(Examination) Are the neck veins distended?"

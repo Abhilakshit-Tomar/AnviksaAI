@@ -78,6 +78,11 @@ button.primary.playing{animation:btnpulse 1s ease-in-out infinite}
 .chip .k{font-family:var(--mono);font-size:10px;color:var(--muted)}
 .thumb.clickable{cursor:pointer}
 .thumb.clickable:hover{border-color:rgba(57,135,229,.6)}
+.thumb.off{opacity:.4}
+.chip.warn{background:rgba(250,178,25,.12);border-color:rgba(250,178,25,.5)}
+.chip.warn .k{color:var(--warning)}
+.docuse{font-size:11.5px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.docuse button{font-size:11px;padding:2px 8px;border-radius:5px}
 
 /* ---------- document text modal ---------- */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000;padding:24px}
@@ -145,6 +150,16 @@ button.primary.playing{animation:btnpulse 1s ease-in-out infinite}
 .qwho{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--warning);margin-bottom:7px}
 .divides{margin-top:12px;padding-top:11px;border-top:1px solid var(--grid);font-size:12px;color:var(--muted);line-height:1.6}
 .divides b{color:var(--ink-2);font-weight:500}
+/* Ask aloud. The spoken sentence is always PRINTED next to the button —
+   translation quality on clinical phrasing is unverified, and a question
+   mistranslated and asked aloud produces an answer that enters the findings
+   pipeline as genuine evidence. Showing it does not fix that; it makes it
+   inspectable by anyone who reads the language. */
+.spoken{margin-top:10px;padding:10px 11px;border-radius:7px;border:1px solid rgba(57,135,229,.35);background:rgba(57,135,229,.08)}
+.spoken .l{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.spoken .s{font-size:15px;color:var(--ink);line-height:1.5}
+.spoken .warn{display:block;font-size:11px;color:var(--muted);margin-top:7px;font-style:italic}
+.qacts{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:12px}
 
 /* ---------- misfit + note ---------- */
 .mis{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid var(--grid);font-size:12.5px;color:var(--ink-2);line-height:1.5}
@@ -577,7 +592,16 @@ function paintQB(){
     ${q.clinician_only?'<div class="qwho">For you to check — do not ask the patient</div>':''}
     <div class="q">${esc(q.ask||q.label)}</div>
     <div class="divides">Bears on <b>${(q.divides||[]).map(esc).join('</b>, <b>')}</b>.</div>
-    <div class="ruleout"><button type="button" id="q-skip">Asked — move on</button></div>`;
+    <div class="qacts">
+      ${q.clinician_only ? '' : '<button type="button" id="q-speak">Ask aloud</button>'}
+      <button type="button" id="q-skip">Asked — move on</button>
+    </div>
+    <div id="q-spoken"></div>`;
+  // No Ask-aloud on examination and observation items. "Are the neck veins
+  // distended?" is addressed to the doctor; reading it to the patient would
+  // be nonsense, and the server refuses these too so no caller can get it
+  // wrong.
+  if(!q.clinician_only) $('q-speak').onclick=()=>speakQuestion(q);
   // Normally an answer arrives on its own: the clinician asks, the patient
   // replies, the next recording is transcribed and extraction picks the
   // finding up as present or absent, at which point it can never be asked
@@ -590,6 +614,42 @@ function paintQB(){
     runAnalyze();
   };
 }
+// Asks the current question out loud, in the patient's language.
+//
+// The old build shipped a dict holding exactly ONE hardcoded Hindi sentence
+// for one question id, and fell through to speaking raw English in an
+// English voice for every other question and every other language. It went
+// unnoticed because the scripted walkthrough pinned the displayed question
+// to that one id, so the fallback never fired in a demo. The server now
+// translates every question and refuses to speak one it could not translate
+// — an English sentence in an English voice is worse than no button.
+async function speakQuestion(q){
+  const btn=$('q-speak');
+  btn.disabled=true; btn.classList.add('playing');
+  const out=$('q-spoken');
+  out.innerHTML='<div class="spoken"><div class="l">translating…</div></div>';
+  try{
+    const res=await fetch('/speak', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({finding: q.finding, language_code: SETUP.languageCode}),
+    });
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
+    const lang=(LANGUAGES.find(l=>l.code===SETUP.languageCode)||{}).label||SETUP.languageCode;
+    out.innerHTML=`<div class="spoken">
+      <div class="l">spoken to the patient, in ${esc(lang)}</div>
+      <div class="s">${esc(data.text)}</div>
+      ${data.translated?'<span class="warn">Machine translation. It has not been checked by a clinician who speaks this language — read it before you rely on the answer.</span>':''}
+    </div>`;
+    playAudio('data:audio/wav;base64,'+data.audio_b64, ()=>{
+      btn.classList.remove('playing'); btn.disabled=false;
+    });
+  }catch(e){
+    out.innerHTML=`<div class="spoken"><div class="l">could not speak it</div><div class="s">${esc(e.message)}</div></div>`;
+    btn.classList.remove('playing'); btn.disabled=false;
+  }
+}
+
 function paintMIS(){
   if(!committed || !hasLiveInput){ $('mis').innerHTML=GATE_MSG; $('mistag').textContent=''; return; }
   if(!dxState) return;
@@ -616,7 +676,17 @@ function paintMIS(){
 // documents uploaded back to back — collapses into ONE /analyze call
 // with everything folded in, not one call per event racing the others.
 // ===================================================================
-let liveTranscriptExtra='', liveDocTextExtra='';
+let liveTranscriptExtra='';
+// Documents are kept as a LIST, not concatenated on arrival, so each one can
+// be included or excluded on its own. They used to be appended straight into
+// one string, which meant a photograph of anything at all contributed its
+// words to the same blob a prescription did — and there was then no way to
+// take one back out. Observed live: a game screenshot uploaded alongside a
+// real consultation changed the candidate list.
+let scannedDocs=[];
+function docText(){
+  return scannedDocs.filter(d=>d.use).map(d=>d.text).join('\n\n');
+}
 let analyzeTimer=null, analyzeInFlight=false, analyzeQueued=false;
 
 function scheduleAnalyze(){
@@ -625,7 +695,7 @@ function scheduleAnalyze(){
 }
 async function runAnalyze(){
   if(analyzeInFlight){ analyzeQueued=true; return; }
-  if(!liveTranscriptExtra && !liveDocTextExtra) return;   // nothing to analyze yet
+  if(!liveTranscriptExtra && !docText()) return;   // nothing to analyze yet
   analyzeInFlight=true;
   // Extraction is a real Sarvam call, typically 15-60s — once the gate is
   // already open, a stale panel with no indication anything is happening
@@ -656,7 +726,7 @@ async function runAnalyze(){
       // returned forever.
       body: JSON.stringify({
         transcript: liveTranscriptExtra,
-        doc_text: liveDocTextExtra,
+        doc_text: docText(),
         confirmed_exclusions: confirmedExclusions,
         asked: askedFindings,
       }),
@@ -725,7 +795,7 @@ function reset(){
   stopQuestionAudio();
   dxState=null;cmState=null;
   committed=false;hasLiveInput=false;
-  liveTranscriptExtra='';liveDocTextExtra='';
+  liveTranscriptExtra='';scannedDocs=[];
   // A new patient inherits nothing: no exclusions someone confirmed about
   // someone else, no questions marked as already asked.
   confirmedExclusions=[];askedFindings=[];seenConditions=new Set();
@@ -919,20 +989,48 @@ document.addEventListener('keydown', e => {
   if(e.key === 'Escape' && !$('doc-modal-overlay').classList.contains('hide')) closeDocModal();
 });
 
-function renderScannedDocs(list){
-  if(!list.length) return;
-  if($('docs').querySelector('.empty')) $('docs').innerHTML='';
-  list.forEach(d=>{
+// Repaints the whole list from scannedDocs, rather than appending, so a
+// document's include/exclude state always matches what is on screen.
+function renderScannedDocs(){
+  if(!scannedDocs.length){
+    $('docs').innerHTML='<div class="empty">No documents scanned.</div>';
+    $('docn').textContent='0 scanned';
+    return;
+  }
+  $('docs').innerHTML='';
+  scannedDocs.forEach((d,i)=>{
     const el=document.createElement('div');
     el.className='doc';
-    el.innerHTML=`<div class="thumb clickable" title="Click to view extracted text"></div><div class="docmeta">
+    // A document the screen did not recognise as clinical is NOT deleted and
+    // its text is NOT thrown away. It is set aside, labelled with what the
+    // screen thought it was, and one click puts it back — because wrongly
+    // discarding a real prescription throws away evidence nobody will ever
+    // know was missing, which is the same shape as removing a warning.
+    el.innerHTML=`<div class="thumb clickable${d.use?'':' off'}" title="Click to view extracted text"></div><div class="docmeta">
       <div class="t">${escHtml(d.name)}</div>
-      <span class="chip"><span class="k">OCR</span> ${d.chars} chars extracted</span>
+      ${d.clinical
+        ? `<span class="chip"><span class="k">OCR</span> ${d.chars} chars extracted</span>
+           ${d.kind?`<span class="chip"><span class="k">READS AS</span> ${escHtml(d.kind)}</span>`:''}`
+        : `<span class="chip warn"><span class="k">NOT A CLINICAL DOCUMENT</span> ${escHtml(d.kind||'unrecognised')}</span>`}
+      ${d.clinical && d.use ? '' :
+        `<div class="docuse">${d.use
+           ? 'Included in the analysis anyway.'
+           : 'Set aside — its text is not being used.'}
+         <button type="button" data-doc="${i}">${d.use?'Set aside':'Use it anyway'}</button></div>`}
     </div>`;
     el.querySelector('.thumb').onclick = () => openDocModal(d.name, d.text);
+    const toggle=el.querySelector('button[data-doc]');
+    if(toggle) toggle.onclick=()=>{
+      scannedDocs[i].use=!scannedDocs[i].use;
+      renderScannedDocs();
+      scheduleAnalyze();
+    };
     $('docs').appendChild(el);
   });
-  $('docn').textContent=$('docs').querySelectorAll('.doc').length+' scanned';
+  const used=scannedDocs.filter(d=>d.use).length;
+  $('docn').textContent = used===scannedDocs.length
+    ? scannedDocs.length+' scanned'
+    : used+' of '+scannedDocs.length+' used';
 }
 
 async function docSend(){
@@ -949,14 +1047,23 @@ async function docSend(){
     const res=await fetch('/capture', {method:'POST', body: fd});
     const data=await res.json().catch(()=>({}));
     if(!res.ok) throw new Error(data.detail || ('HTTP '+res.status));
-    renderScannedDocs(data.scanned_documents || []);
-    if((data.scanned_documents||[]).length){
+    const incoming=data.scanned_documents || [];
+    // Default: use it if the screen called it clinical. Never the reverse —
+    // nothing is silently discarded, it is only set aside where the
+    // clinician can see it and put it back with one click.
+    incoming.forEach(d=>scannedDocs.push(Object.assign({}, d, {use: d.clinical !== false})));
+    renderScannedDocs();
+    if(incoming.length){
       svc('s-vis',1);
-      liveDocTextExtra += (liveDocTextExtra?'\n\n':'') + data.scanned_documents.map(d=>d.text).join('\n\n');
       hasLiveInput=true; paintDX(); paintCM();
       scheduleAnalyze();
     }
-    $('doc-result').textContent='Scanned — panel above updated.';
+    const rejected=incoming.filter(d=>d.clinical===false);
+    $('doc-result').textContent = rejected.length
+      ? (rejected.length===incoming.length
+          ? 'Scanned — this does not look like a clinical document, so it is not being used.'
+          : rejected.length+' of '+incoming.length+' do not look clinical and are not being used.')
+      : 'Scanned — panel above updated.';
   }catch(e){
     $('doc-result').textContent='Document scan failed: '+e.message;
   }finally{

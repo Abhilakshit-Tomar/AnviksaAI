@@ -160,8 +160,111 @@ _TOOL = {
 # results instead of being silently ignored.
 _PROMPT_VERSION = llm.content_hash(
     SYSTEM_PROMPT, json.dumps(_TOOL, sort_keys=True),
-    json.dumps(sorted(vocabulary.FINDINGS), ensure_ascii=False),
+    # The WHOLE catalog, not just the ids. The catalog sent to the model
+    # carries each finding's label and question, so editing a question
+    # changes the prompt. Hashing ids alone would have served the old
+    # extraction back — the same stale-cache bug this line was added to fix,
+    # one level down.
+    json.dumps(vocabulary.catalog_for_prompt(), sort_keys=True, ensure_ascii=False),
 )
+
+
+_SCREEN_PROMPT = """You are checking whether a photographed document belongs \
+in a patient's clinical record.
+
+You are given the text an OCR pass pulled out of one image. Decide whether \
+that image is a CLINICAL document — something a patient would hand a doctor, \
+or a doctor would file.
+
+CLINICAL: prescriptions, medicine strips and packaging, lab and imaging \
+reports, discharge summaries, referral letters, vaccination cards, hospital \
+cards, previous consultation notes, ECG printouts, medical bills that name \
+drugs or investigations.
+
+NOT CLINICAL: screenshots of games, apps, websites and chats; photographs of \
+people, places, food or pets; receipts and bills for anything other than \
+care; identity documents with no medical content; blank or unreadable pages; \
+anything where the OCR text is noise.
+
+OCR is imperfect. Judge by what the text is plainly ABOUT, not by whether it \
+is clean. A smudged prescription is still a prescription. If a document is \
+genuinely ambiguous, call it clinical — a clinician can dismiss one extra \
+document in a second, and wrongly discarding a real prescription throws away \
+evidence nobody will ever know was missing.
+
+`kind` is a two-to-four word description a clinician can read at a glance: \
+"oral contraceptive strip", "chest X-ray report", "mobile game screenshot"."""
+
+_SCREEN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "screen_document",
+        "description": "Say whether this image is a clinical document.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "clinical": {
+                    "type": "boolean",
+                    "description": "True if this belongs in a clinical record.",
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Two to four words describing what it is.",
+                },
+            },
+            "required": ["clinical", "kind"],
+        },
+    },
+}
+
+
+def screen_document(text):
+    """One document's OCR text -> {"clinical": bool, "kind": str}.
+
+    WHY THIS EXISTS. Document text is concatenated into one blob before
+    extraction, so a photograph of anything at all contributes its words to
+    the same input a prescription does. Observed live: uploading a game
+    screenshot alongside a real consultation changed the candidate list, and
+    added a finding that nothing the patient said supported. The screen runs
+    per document, while per-document text still exists — after concatenation
+    there is no way to attribute anything to anything.
+
+    THIS FLAGS; IT DOES NOT DELETE. The caller shows the judgment and lets a
+    clinician override it. Wrongly discarding a real prescription throws away
+    evidence nobody will ever know was missing, which is the same failure
+    shape as removing a warning, so a human keeps the last word here too.
+
+    Deliberately NOT part of extract(): this judges what a document IS, and
+    it must not see the transcript or the vocabulary. A screen that knew what
+    findings were being looked for would start rating documents by whether
+    they were useful rather than by whether they were real.
+    """
+    text = (text or "").strip()
+    if not text:
+        return {"clinical": False, "kind": "no readable text"}
+
+    cpath = llm.CACHE_DIR / f"screen_{llm.content_hash(llm.MODEL, _SCREEN_PROMPT, text)}.json"
+
+    def produce():
+        return llm.call_tool(
+            _SCREEN_PROMPT,
+            f"OCR TEXT FROM ONE IMAGE:\n{text}\n\nCall screen_document.",
+            _SCREEN_TOOL,
+            max_tokens=256,
+        )
+
+    try:
+        parsed = llm.cached(cpath, produce)
+    except Exception as e:
+        # A screening failure must not cost the clinician a real document.
+        # Fail open, and say so rather than silently passing it through.
+        print(f"screen_document: failed, treating as clinical — {e}")
+        return {"clinical": True, "kind": "not screened"}
+
+    return {
+        "clinical": bool(parsed.get("clinical", True)),
+        "kind": (parsed.get("kind") or "unrecognised").strip(),
+    }
 
 
 def _flatten(transcript):

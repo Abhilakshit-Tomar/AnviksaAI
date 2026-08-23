@@ -3,11 +3,11 @@ capture.py — the ears (and mouth). Turns a recorded audio file into a
 diarized transcript, a photographed prescription into text, and text into
 spoken audio.
 
-Four functions, matching day-plan.md step 4 (translate() added later, for
-showing the live-recording transcript's English gloss in the frontend):
-    transcribe(path)        -> dict           (saaras-v3, batch + diarized)
+Four functions:
+    transcribe(path)        -> dict            (saaras-v3, batch + diarized)
     read_image(path)        -> dict            (sarvam-vision / doc_ai)
-    translate(text)         -> str             (sarvam-translate/mayura)
+    translate(text)         -> str             (sarvam-translate / mayura)
+    speak(text, language)   -> WAV bytes       (bulbul-v3)
 
 Every call is cached to cache/ keyed by a hash of its input, so the same
 audio/image/text is never sent to Sarvam twice — vision is capped at
@@ -25,6 +25,7 @@ real client/response objects (or write a throwaway script and read the
 actual output) before trusting a docs page.
 """
 import hashlib
+import base64
 import json
 import os
 import tempfile
@@ -177,6 +178,42 @@ def read_image(path, language="en-IN"):
     extracted = {"blocks": blocks, "text": "\n".join(blocks)}
     cpath.write_text(json.dumps(extracted, ensure_ascii=False), encoding="utf-8")
     return extracted
+
+
+# --------------------------------------------------------------------------
+def speak(text, language_code="hi-IN", speaker="shubh"):
+    """Text -> WAV bytes, via bulbul-v3. Cached by (text, language, speaker).
+
+    Returns bytes rather than writing a file: the only caller streams this
+    straight to the browser, and a temp file on the way there was pure
+    ceremony.
+
+    THIS SPEAKS TO A PATIENT. Two rules the caller must hold to, neither
+    enforceable here:
+
+    1. Never speak a finding flagged by vocabulary.is_clinician_only(). Those
+       questions are phrased for the doctor — "Are the neck veins distended?"
+       read aloud to a patient is nonsense at best.
+    2. Never speak raw English text in a non-English voice. The previous
+       build shipped a dict with exactly ONE hardcoded Hindi sentence and
+       fell through to speaking English in an English voice for every other
+       question and every other language. It went unnoticed because the
+       scripted demo pinned the question to that one id. Translate first,
+       and show the translation on screen — an unverified translation asked
+       aloud produces an answer that enters the findings pipeline as genuine
+       evidence, so it has to be inspectable.
+    """
+    key_hash = _hash(text, language_code, speaker)
+    cpath = CACHE_DIR / f"tts_{key_hash}.wav"
+    if not cpath.exists():
+        resp = _with_retry(
+            client().text_to_speech.convert,
+            text=text, language_code=language_code, speaker=speaker,
+            model="bulbul:v3",
+        )
+        audios = getattr(resp, "audios", None) or resp["audios"]
+        cpath.write_bytes(base64.b64decode(audios[0]))
+    return cpath.read_bytes()
 
 
 # --------------------------------------------------------------------------

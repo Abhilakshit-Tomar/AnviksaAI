@@ -200,6 +200,30 @@ _PROMPT_VERSION = llm.content_hash(
 )
 
 
+# Label -> id, for resolving a model that answered with the human-readable
+# name instead of the id. Lowercased so case never decides whether a
+# clinician sees the evidence behind a candidate.
+_BY_LABEL = {m["label"].lower(): fid for fid, m in vocabulary.FINDINGS.items()}
+
+
+def _resolve(item):
+    """A model's answer -> a finding id, or None.
+
+    Accepts the id, the id in any case, or the panel label. Deliberately
+    stops there: anything looser would start guessing which finding was
+    meant, and a wrong guess here invents evidence rather than losing it.
+    """
+    if not isinstance(item, str):
+        return None
+    text = item.strip()
+    if text in vocabulary.FINDINGS:
+        return text
+    lowered = text.lower()
+    if lowered in vocabulary.FINDINGS:
+        return lowered
+    return _BY_LABEL.get(lowered)
+
+
 def propose(findings):
     """findings: {finding_id: True|False} from extract.extract().
 
@@ -249,25 +273,45 @@ def propose(findings):
             continue
 
         def keep(key, allowed):
-            """Filter to real ids in the right state. A model claiming a
-            finding supports a condition when the patient does not have that
-            finding is asserting evidence that does not exist — the one thing
-            a clinician skim-reading a panel would not catch."""
-            return [f for f in (raw.get(key) or []) if f in allowed]
+            """Resolve to real ids in the right state, then filter.
+
+            The filter matters: a model claiming a finding supports a
+            condition when the patient does not have that finding is
+            asserting evidence that does not exist — the one thing a
+            clinician skim-reading a panel would not catch.
+
+            The RESOLVE step matters just as much, and was missing. Matching
+            ids exactly meant a model answering "Headache" instead of
+            "headache" had every supporting finding dropped, and the panel
+            rendered a row of real candidates each captioned "no findings for
+            it" while the same findings sat in Doesn't Fit saying nothing
+            accounted for them. Observed live. Both halves of the screen were
+            wrong, and neither looked like a bug.
+            """
+            out, dropped = [], []
+            for item in raw.get(key) or []:
+                fid = _resolve(item)
+                if fid is not None and fid in allowed:
+                    if fid not in out:
+                        out.append(fid)
+                elif item:
+                    dropped.append(item)
+            if dropped:
+                # Printed, not swallowed. A candidate losing its evidence is
+                # invisible on screen — it just looks like a weak candidate.
+                print(f"propose: {condition!r} {key}: dropped {dropped}")
+            return out
 
         candidates.append({
             "condition": condition,
             "reasoning": reasoning,
             "supported_by": keep("supported_by", present_set),
             "opposed_by": keep("opposed_by", absent_set),
-            # Unresolved must be genuinely unknown: not present, not absent,
-            # and a real finding. Anything else would produce a question the
-            # patient has already answered, which is the bug this project
+            # Unresolved must be genuinely unknown: a real finding, and
+            # neither present nor absent. Anything else produces a question
+            # the patient has already answered, which is the bug this project
             # spent a whole build cycle on.
-            "unresolved": [
-                f for f in (raw.get("unresolved") or [])
-                if f in vocabulary.FINDINGS and f not in findings
-            ],
+            "unresolved": keep("unresolved", set(vocabulary.FINDINGS) - set(findings)),
         })
 
     return candidates

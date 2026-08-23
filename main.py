@@ -6,6 +6,11 @@
         or one-or-more "documents" files
             -> {"scanned_documents": [{"name", "chars", "text"}, ...]}
 
+    POST /speak     application/json. {"finding": id, "language_code": str}
+        -> the question translated into the patient's language, spoken by
+        bulbul-v3, PLUS the translated text so it can be shown on screen and
+        checked. Refuses clinician-only questions.
+
     POST /analyze   application/json. extract -> propose -> triage, over
         everything accumulated so far.
             {"transcript": str, "doc_text": str,
@@ -50,6 +55,7 @@ Usage:
 """
 import argparse
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -66,6 +72,7 @@ from starlette.concurrency import run_in_threadpool
 import capture
 import extract
 import propose
+import vocabulary
 from engine import Engine
 
 REPO_ROOT = Path(__file__).parent
@@ -161,7 +168,14 @@ async def capture_only(request: Request):
                     result = await run_in_threadpool(capture.read_image, str(path))
                 except Exception as e:
                     raise RuntimeError(f"{name}: {e}") from e
-                return name, result["text"]
+                text = result["text"]
+                # Screened per document, HERE, because this is the last point
+                # at which per-document text exists. /analyze concatenates
+                # everything into one blob, after which a game screenshot's
+                # words are indistinguishable from a prescription's — which
+                # is exactly how one changed the candidate list.
+                screen = await run_in_threadpool(extract.screen_document, text)
+                return name, text, screen
 
             try:
                 results = await asyncio.gather(*[_scan(n, p) for n, p in docs_meta])
@@ -170,8 +184,9 @@ async def capture_only(request: Request):
                 raise HTTPException(502, f"document scan failed for {e}")
 
             return {"scanned_documents": [
-                {"name": name, "chars": len(text), "text": text}
-                for name, text in results
+                {"name": name, "chars": len(text), "text": text,
+                 "clinical": screen["clinical"], "kind": screen["kind"]}
+                for name, text, screen in results
             ]}
 
         raise HTTPException(400, "/capture requires an 'audio' file or 'documents' files")
@@ -213,6 +228,72 @@ async def analyze(req: AnalyzeRequest):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(502, f"analysis failed: {e}")
+
+
+class SpeakRequest(BaseModel):
+    # The finding id whose question to ask. NOT free text: the server looks
+    # the wording up itself, so nothing the browser sends can put words in
+    # the clinician's mouth or bypass the clinician-only check below.
+    finding: str
+    language_code: str = "hi-IN"
+
+
+@app.post("/speak")
+async def speak(req: SpeakRequest):
+    """Ask the current question aloud, in the patient's language.
+
+    -> {"text": <what is actually spoken>, "audio_b64": <wav>, "translated": bool}
+
+    THE TRANSLATION IS RETURNED SO IT CAN BE SHOWN. Sarvam's translation
+    quality on clinical phrasing across ten Indian languages has not been
+    verified by a native speaker, and a mistranslated question asked aloud
+    produces a wrong answer that enters the findings pipeline as genuine
+    evidence — indistinguishable, afterwards, from something the patient
+    actually said. Putting the translated sentence on screen next to the
+    audio does not fix that, but it makes it inspectable instead of
+    invisible. Anyone who reads the language can catch it.
+
+    The previous build had none of this: it shipped one hardcoded Hindi
+    sentence for one question id and spoke raw English in an English voice
+    for everything else. It went unnoticed because the scripted demo pinned
+    the question to that one id.
+    """
+    ask = vocabulary.question(req.finding)
+    if not ask:
+        raise HTTPException(400, f"no such finding: {req.finding}")
+
+    # Examination and observation items are written for the clinician.
+    # "Are the neck veins distended?" read aloud to a patient is nonsense,
+    # and refusing here rather than in the frontend means no caller can get
+    # it wrong.
+    if vocabulary.is_clinician_only(req.finding):
+        raise HTTPException(400, "this question is for the clinician and is not spoken to the patient")
+
+    text, translated = ask, False
+    if req.language_code != "en-IN":
+        try:
+            text = await run_in_threadpool(
+                capture.translate, ask,
+                source_language_code="en-IN", target_language_code=req.language_code)
+            translated = True
+        except Exception:
+            # Speaking English in an English voice would be the old bug.
+            # Better to fail the button than to ask the patient a question
+            # in a language they may not have.
+            traceback.print_exc()
+            raise HTTPException(502, "could not translate the question; not speaking it")
+
+    try:
+        audio = await run_in_threadpool(capture.speak, text, req.language_code)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(502, f"speech synthesis failed: {e}")
+
+    return {
+        "text": text,
+        "translated": translated,
+        "audio_b64": base64.b64encode(audio).decode("ascii"),
+    }
 
 
 @app.get("/")
