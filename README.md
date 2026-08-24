@@ -56,6 +56,16 @@ What the free plan costs, so it isn't discovered later:
 | Ephemeral filesystem | `cache/` is empty after every sleep and redeploy |
 | 750 instance-hours / month | across the whole workspace |
 
+An external pinger on `/web/` every 5 minutes removes the sleep. That costs
+~720 of the 750 hours, so it fits alone and does not fit alongside a second
+free service. Render tolerates this rather than supporting it.
+
+Hugging Face Spaces looks like the obvious alternative and is not one twice
+over. `CPU Basic — FREE` on its pricing page is the *hourly hardware* cost; a
+Docker Space still requires PRO to create, the free-account exception being
+two Gradio Spaces on ZeroGPU. And its proxy returns 504 at around 60s, so
+even paid it would cut `/analyze` off mid-call.
+
 Nothing breaks when the cache is wiped — every call falls through to a real
 one. The first consult after a wake just pays full price for work it had
 already paid for once.
