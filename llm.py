@@ -101,11 +101,13 @@ def call_tool(system_prompt, user_content, tool, *, max_tokens=4096, max_retries
     with no error. It was above it: the frontend aborted at 75s while a
     single cold extraction measured 120s — one Sarvam timeout plus a
     successful retry. The abort exists to recover a genuinely dead
-    connection, not to cap slow work, so it belongs above this ceiling and
-    now sits at 300s.
+    connection, not to cap slow work, so it belongs above this ceiling AND
+    above the cold start that can precede it on a free host that sleeps
+    after 15 idle minutes. It sits at 360s: 244 + 60, with margin.
 
     Anything hosting this needs to allow a request that long too; most
-    proxies cap well below it by default.
+    proxies cap well below it by default. Vercel and Netlify functions cap
+    at 10-60s and cannot host this at all. See render.yaml.
     """
     delay = 2.0
     for attempt in range(max_retries):

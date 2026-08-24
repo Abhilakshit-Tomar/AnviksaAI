@@ -222,6 +222,8 @@ canonical_case.yaml the one case that defines correct output
 selftest.py        invariants: never re-ask, exclusion, severity floor, determinism
 main.py            FastAPI: /capture (STT/OCR + screen), /analyze (extract+propose+triage), /speak
 web/index.html     single file, no build step
+render.yaml        the free deployment; the key is entered in the
+                   dashboard, never here
 ```
 
 `llm.py` is deliberately ignorant of medicine — it takes a system prompt, a

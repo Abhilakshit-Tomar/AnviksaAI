@@ -1,0 +1,46 @@
+# render.yaml — the free deployment, declared rather than clicked.
+#
+# WHY RENDER AND NOT THE OBVIOUS ONES. This app holds an HTTP request open
+# for a long time. /analyze makes TWO chat calls (llm.py's ceiling is ~244s
+# for the pair) and /capture waits on a batch STT job (up to 180s). Any host
+# whose proxy caps a response below that returns 502 while the work is still
+# running, and the clinician sees a stale panel with no error.
+#
+#   Vercel / Netlify functions   10-60s      too short, structurally
+#   Railway                       no free tier any more
+#   Hugging Face Spaces           compute Spaces are no longer free
+#   Render web services           100 minutes  <- fits, with room to spare
+#
+# WHAT FREE COSTS YOU HERE, stated plainly rather than discovered later:
+#   - the instance sleeps after 15 minutes with no traffic, and the next
+#     request pays a 30-60s cold start before any of the above begins;
+#   - the filesystem is ephemeral, so cache/ is empty after every sleep and
+#     every redeploy. Nothing breaks — llm.py and capture.py both fall
+#     through to a real call — but the first consult after a wake pays full
+#     price for everything, including calls it had already paid for;
+#   - 750 instance-hours a month across the workspace.
+#
+# THE KEY IS NOT IN THIS FILE AND MUST NOT BE. `sync: false` means Render
+# prompts for the value in its own dashboard and stores it there. A Sarvam
+# key committed to a public repo is scraped by bots within hours, and
+# deleting the commit does not help — it stays in history. Rotating the key
+# in the Sarvam dashboard is the only real fix.
+services:
+  - type: web
+    name: anviksaai
+    runtime: python
+    plan: free
+    # Closest region to an Indian OPD; every Sarvam call leaves from here.
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    # main.py binds PORT (which Render injects) and 0.0.0.0 already. A
+    # loopback-only bind is unreachable from outside the container.
+    startCommand: python main.py
+    # Python 3.12, from .python-version in the repo root. Render reads that
+    # file; PYTHON_VERSION would override it and is deliberately not set, so
+    # there is one place to change it.
+    healthCheckPath: /web/
+    envVars:
+      # Entered by YOU in the Render dashboard, once. Never committed.
+      - key: SARVAM_API_KEY
+        sync: false

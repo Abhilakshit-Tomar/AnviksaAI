@@ -32,6 +32,38 @@ database. The invariant suite runs offline in about a second:
 python selftest.py
 ```
 
+## Deploy it, free
+
+`render.yaml` is a Render blueprint. Push the repo to GitHub, then in the
+Render dashboard: **New → Blueprint**, pick the repo, and it reads the file.
+It will ask for one value — `SARVAM_API_KEY`. **You type that, in Render's
+dashboard, and it never enters the repo.** A key committed to a public repo
+is scraped within hours, and deleting the commit does not undo it; rotating
+in the Sarvam dashboard is the only real fix.
+
+The choice of host is not aesthetic. **This app holds an HTTP request open
+for minutes** — `/analyze` makes two chat calls (~244s worst case) and
+`/capture` waits on a batch STT job (up to 180s). Serverless function
+platforms cap a response at 10-60s and will return an error while the work
+is still running, which the panel shows as *nothing happening*. Render web
+services allow 100 minutes.
+
+What the free plan costs, so it isn't discovered later:
+
+| | |
+|---|---|
+| Sleeps after 15 idle minutes | the next request pays a 30-60s cold start |
+| Ephemeral filesystem | `cache/` is empty after every sleep and redeploy |
+| 750 instance-hours / month | across the whole workspace |
+
+Nothing breaks when the cache is wiped — every call falls through to a real
+one. The first consult after a wake just pays full price for work it had
+already paid for once.
+
+**The deployed app has no authentication.** Anyone with the URL can spend
+your Sarvam quota. That is acceptable for showing it to people and is not
+acceptable for anything else.
+
 ## How it works
 
 ```
