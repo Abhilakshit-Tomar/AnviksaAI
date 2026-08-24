@@ -1,5 +1,10 @@
 # AnviksaAI
 
+**[Try it →](https://anviksaai.onrender.com/web/)**  ·  decision support only, not a
+medical device, not for clinical use. `severity.yaml` has not been reviewed by
+a clinician — see [What this is not](#what-this-is-not) before reading anything
+on the panel as advice.
+
 A recall aid for a 2-minute Indian OPD consultation. It does **not** diagnose,
 and it does **not** tell you how likely anything is.
 
@@ -34,12 +39,20 @@ python selftest.py
 
 ## Deploy it, free
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/absingal09/AnviksaAI)
+
 `render.yaml` is a Render blueprint. Push the repo to GitHub, then in the
 Render dashboard: **New → Blueprint**, pick the repo, and it reads the file.
 It will ask for one value — `SARVAM_API_KEY`. **You type that, in Render's
 dashboard, and it never enters the repo.** A key committed to a public repo
 is scraped within hours, and deleting the commit does not undo it; rotating
 in the Sarvam dashboard is the only real fix.
+
+The button reads the same file, and needs the repo to be **public** — on a
+private repo it only works for someone who already has Render's GitHub App
+pointed at it, which for a stranger means it silently does nothing. Either
+way it stops at the same place: it will ask *you* for `SARVAM_API_KEY`, and
+whoever clicks it deploys under their own account with their own key.
 
 The choice of host is not aesthetic. **This app holds an HTTP request open
 for minutes** — `/analyze` makes two chat calls (~244s worst case) and
